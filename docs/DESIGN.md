@@ -1,6 +1,6 @@
 # Design: onedrive-linux-ondemand
 
-Status: **draft for review**. Nothing is built yet. Research behind these
+Status: **approved 2026-10-30** (see §12). Nothing is built yet. Research behind these
 decisions is in [RESEARCH.md](RESEARCH.md).
 
 ## 1. What Linux can and cannot do (read this first)
@@ -75,9 +75,11 @@ files in your editor must keep working. rclone is mature, and our code is new.
 A SQLite file holds **rules**, not per-file flags:
 
 ```
-rules(path TEXT PRIMARY KEY,         -- path relative to the OneDrive root
+rules(item_id TEXT PRIMARY KEY,      -- OneDrive's permanent ID for the item
+      path TEXT,                     -- last known path, relative to the OneDrive root
       state TEXT,                    -- 'pinned' or 'online'
-      created_at TEXT)
+      created_at TEXT,
+      last_seen TEXT)                -- last time we confirmed the path
 ```
 
 - A file's effective state comes from the **nearest rule** on it or a parent
@@ -86,11 +88,33 @@ rules(path TEXT PRIMARY KEY,         -- path relative to the OneDrive root
 - "Free up space" on a file inside a pinned folder adds an `online` rule
   for that file only.
 - "Locally available" is the default when no rule applies.
-- **Limitation (v1):** if you rename or move a pinned item itself, the rule
-  stays on the old path, so the item becomes "locally available" (still
-  downloaded, just no longer protected). The CLI/tray will list "orphaned"
-  pins. Renaming files *inside* a pinned folder is fine. Following renames
-  via OneDrive item IDs is a later improvement.
+
+### Pins follow renames and moves
+
+Every OneDrive file and folder has a **permanent item ID** that never changes
+when it's renamed or moved, whether in Nemo, on the website or on Windows.
+The rule is keyed on that ID, and the path is only a "last known location".
+
+1. **When pinning,** the daemon asks rclone for the item's ID (rclone's
+   `lsjson`/`operations/stat` returns an `ID` for OneDrive) and stores it.
+2. **Checking paths:** before every eviction pass and every pinned-folder
+   re-scan, the daemon checks that each rule's path still exists.
+3. **If a path is gone,** the daemon looks the ID up directly in the
+   Microsoft Graph API (`GET /me/drive/items/{id}`). That returns the item's
+   current name and folder in one request. It uses the same sign-in token
+   rclone already has, read from our own rclone config.
+   - **Found:** update the rule's path. The item stays pinned.
+   - **In the recycle bin / deleted:** the rule is marked "deleted" and
+     kept for 30 days (in case you restore it), then removed.
+   - **Moved outside the folder this client shows:** the rule is kept but
+     inactive. It becomes active again if the item comes back.
+4. **Safety:** if any pinned rule couldn't be checked (for example you're
+   offline), the eviction pass **skips the timer rule entirely** and only
+   frees space in a disk-nearly-full emergency. A just-renamed pinned file is
+   therefore never freed by mistake.
+
+**(verify in milestone b):** the exact ID format rclone returns for Personal
+vs Business, and that it matches what Graph expects.
 
 ## 4. Where your data physically lives
 
@@ -193,7 +217,7 @@ history is still the fallback. We will say "best effort" in the README, not
 
 | Situation | What happens / what we do |
 |---|---|
-| Nemo thumbnails | Nemo reads image/video files to draw thumbnails, which **downloads them**. Setup offers to set Nemo's "Show thumbnails" to "Never", or to lower the thumbnail size limit. Your choice. |
+| Nemo thumbnails | To show a small preview picture instead of a generic icon, Nemo reads the whole image/video, which **downloads it**. Setup asks once whether to allow that. First, milestone (c) checks whether Nemo's existing "Show thumbnails: Local files only" setting already treats the rclone mount as remote. If it does, nothing needs changing. |
 | Network drop | rclone retries with back-off. Tray shows "Offline". Uploads resume automatically. |
 | Sign-in expires (90 days unused, or password change) | Mount fails to talk to OneDrive. Tray shows "Sign in again", which re-runs the browser sign-in. |
 | Throttling (HTTP 429) | rclone backs off automatically. Your own client ID reduces this (optional, later). |
@@ -248,18 +272,19 @@ would add work without working properly.
 | # | Deliverable | How you'll test it |
 |---|---|---|
 | **a** | `setup` (browser sign-in, creates our rclone config pointed at `LinuxClientTest`) + mount as a systemd user service. Verify the rclone facts marked *(verify)*. | Sign in, see the test folder in `~/OneDrive`, open/edit a file, see it change on onedrive.com. |
-| **b** | Daemon + CLI: `pin`, `unpin`, `free`, `status`, eviction loop. | `onedrive-ondemand pin file`, check `status`, pull the network cable and open it. `free` it and watch disk usage drop. |
+| **b** | Daemon + CLI: `pin`, `unpin`, `free`, `status`, eviction loop, pins following renames. | `onedrive-ondemand pin file`, check `status`, pull the network cable and open it. `free` it and watch disk usage drop. Rename a pinned file locally and on the website, and check it's still pinned. |
 | **c** | Nemo extension: emblems + OneDrive submenu. | Right-click → OneDrive → Always keep on this device, watch the emblem change. |
 | **d** | Tray icon: status, pause/resume, recent activity, eviction settings. | Pause, edit a file, confirm it doesn't upload, resume. |
 | **e** | Autostart, `.deb`, README install/uninstall/limitations. | Install the .deb, reboot, everything starts on its own. |
 | **f** | Conflict guard (§7). | Edit the same file on the web and locally, get both copies. |
 
-## 12. Questions for you
+## 12. Decisions from review (2026-10-30)
 
-1. Which Linux Mint version (Menu → About)? 21.x and 22.x both work but
-   ship different Python versions.
-2. Are the defaults OK: free unused files after **30 days**, keep **10 %**
-   disk free? (Windows' default is "never" unless Storage Sense is on.)
-3. Is it OK that Nemo thumbnails are a setup-time choice (§8) rather than
-   something we fix? We can't stop Nemo reading files.
-4. Is the v1 rename limitation (§3) acceptable for now?
+1. **Mint version:** a recent install of the Cinnamon edition, so almost
+   certainly Mint 22.x (Ubuntu 24.04 base, Python 3.12). Confirm with
+   `cat /etc/linuxmint/info` at the start of milestone (a).
+2. **Defaults approved:** free unused files after 30 days, keep 10 % disk free.
+3. **Thumbnails:** a one-time setup question, after checking whether Nemo
+   already treats the mount as remote (§8).
+4. **Pins must follow renames/moves:** in scope now, via OneDrive item IDs
+   (§3), built in milestone (b).
