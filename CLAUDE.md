@@ -17,8 +17,12 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
   sign-in, our own rclone config, mount of `LinuxClientTest` as the
   `onedrive-ondemand-mount` systemd user service). Verification results are in
   `docs/RESEARCH.md` §5.
-- Next: **milestone (b)**: daemon + CLI (`pin`, `unpin`, `free`, `status`,
-  eviction loop, pins following renames). Check the Business ID format.
+- **Milestone (b) done 2026-10-30:** daemon (`onedrive-ondemand-daemon`
+  service) + CLI `pin`, `unpin`, `free`, `status`, `activity`, `pause`,
+  `resume`, `settings`. Results in `docs/RESEARCH.md` §6.
+- Next: **milestone (c)**: Nemo extension (emblems + OneDrive submenu).
+- Live tests go in `LinuxClientTest/_dev-tests/`. Other folders in there are the
+  maintainer's own test files: only ever read them, never change them.
 - Milestones run in order a → f. After each one: explain in plain language
   how to test it and what is still missing, then commit.
 - Run tests with: `python3 -m unittest discover -s tests -t .`

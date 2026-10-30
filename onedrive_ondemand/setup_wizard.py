@@ -17,7 +17,6 @@ from onedrive_ondemand import config, graph, rclone
 # The folder that holds the onedrive_ondemand package (the repo, when
 # running from a source checkout). systemd needs it to find our code.
 SOURCE_DIR = Path(__file__).resolve().parent.parent
-UNIT_TEMPLATE = SOURCE_DIR / "data" / config.MOUNT_SERVICE
 # Hidden file setup writes through the mount to check where uploads land.
 PROBE_NAME = ".onedrive-ondemand-setup-check.txt"
 
@@ -148,20 +147,23 @@ def check_upload_location(mount_path, folder_id):
     return False
 
 
-def install_service(mount_path):
-    """Write the systemd unit from the template and start it at every login."""
-    text = UNIT_TEMPLATE.read_text(encoding="utf-8")
-    text = text.replace("@SOURCE_DIR@", str(SOURCE_DIR))
-    text = text.replace("@PYTHON@", sys.executable)
+def install_services():
+    """Write the systemd units from their templates and start them at every login."""
     config.SYSTEMD_USER_DIR.mkdir(parents=True, exist_ok=True)
-    (config.SYSTEMD_USER_DIR / config.MOUNT_SERVICE).write_text(text, encoding="utf-8")
-
+    for name in (config.MOUNT_SERVICE, config.DAEMON_SERVICE):
+        text = (SOURCE_DIR / "data" / name).read_text(encoding="utf-8")
+        text = text.replace("@SOURCE_DIR@", str(SOURCE_DIR))
+        text = text.replace("@PYTHON@", sys.executable)
+        (config.SYSTEMD_USER_DIR / name).write_text(text, encoding="utf-8")
     systemctl("daemon-reload")
-    systemctl("enable", config.MOUNT_SERVICE)
-    systemctl("restart", config.MOUNT_SERVICE)
+    for name in (config.MOUNT_SERVICE, config.DAEMON_SERVICE):
+        systemctl("enable", name)
+        systemctl("restart", name)
 
-    # Wait up to 30 seconds for the folder to show OneDrive.
-    for _ in range(30):
+
+def wait_for_mount(mount_path, seconds=30):
+    """Wait for the folder to show OneDrive. Returns True once it does."""
+    for _ in range(seconds):
         if os.path.ismount(mount_path):
             return True
         time.sleep(1)
@@ -180,7 +182,8 @@ def run():
                  f"Set \"remote_folder\" in {config.SETTINGS_FILE}.")
     mount_path = config.mount_path(settings)
 
-    # If setup ran before, stop the mount so we can change things safely.
+    # If setup ran before, stop everything so we can change things safely.
+    systemctl("stop", config.DAEMON_SERVICE)
     systemctl("stop", config.MOUNT_SERVICE)
     check_mount_folder(mount_path)
 
@@ -193,8 +196,9 @@ def run():
     config.save_settings(settings)
     mount_path.mkdir(parents=True, exist_ok=True)
 
-    print(f"\nStarting the mount service ({config.MOUNT_SERVICE})...")
-    if not install_service(mount_path):
+    print("\nStarting the services...")
+    install_services()
+    if not wait_for_mount(mount_path):
         print(f"\nThe mount didn't start. See what went wrong with:\n"
               f"  journalctl --user -u {config.MOUNT_SERVICE} -n 30")
         sys.exit(1)
@@ -202,6 +206,7 @@ def run():
     print(f"Checking that files saved in {mount_path} upload into '{folder}'...")
     if not check_upload_location(mount_path, folder_item["id"]):
         # Safety first: turn the mount off so nothing else goes to the wrong place.
+        systemctl("disable", "--now", config.DAEMON_SERVICE)
         systemctl("disable", "--now", config.MOUNT_SERVICE)
         sys.exit(f"\nSTOPPED: a test file saved in {mount_path} did not arrive in '{folder}' "
                  "on OneDrive, so the mount has been turned off.\n"

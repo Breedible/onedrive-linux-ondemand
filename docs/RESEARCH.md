@@ -147,6 +147,33 @@ mount of `LinuxClientTest`.
 4. **`rclone authorize onedrive`** (v1.75.2) printed the token JSON between
    the `--->` / `<---End paste` markers, and the sign-in worked first time.
 
+## 6. Milestone (b) results (2026-10-30)
+
+Tested live in `LinuxClientTest/_dev-tests` (never in the maintainer's own
+files):
+
+- **Pin a folder:** an online-only folder of 3 files (6.7 MB) showed
+  "syncing", then "always kept" about 10 s later.
+- **Free up space** on a folder and on one file inside a pinned folder: the
+  cache files went; the exception (`online` rule) held through the next
+  upkeep pass.
+- **Pins follow renames:** a pinned file and a pinned folder renamed through
+  `~/OneDrive`, and a pinned file renamed directly on OneDrive, were all
+  followed (Graph lookup by item ID), including an exception rule inside the
+  renamed folder. A rename made on OneDrive shows up in `~/OneDrive` after
+  about 12 s; rclone treats it as a new file, so the pin downloads it again.
+- **Deleted pinned file:** detected (Graph 404) and its rule kept as
+  "deleted" for 30 days.
+- **Pause:** with uploads held via `vfs/queue-set-expiry`, an edit stayed
+  local for 15 s (OneDrive still had the old size), then uploaded within
+  10 s of resume.
+- **Eviction respects pins:** with "keep 99 % free" forced, the upkeep pass
+  freed 4 unpinned files and kept the pinned ones.
+- Graph's `parentReference.path` returns names with spaces as-is (not
+  percent-encoded).
+- Not tested yet: pulling the network cable (offline behaviour), and a
+  OneDrive Business account.
+
 ## Sources
 
 - rclone mount docs: https://rclone.org/commands/rclone_mount/

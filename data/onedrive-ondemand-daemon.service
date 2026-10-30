@@ -1,0 +1,19 @@
+# Pins, freeing space and file states for OneDrive On-Demand.
+# Installed by `onedrive-ondemand setup`, which fills in the @...@ placeholders.
+# Separate from the mount service on purpose: if this crashes, your files keep working.
+[Unit]
+Description=OneDrive On-Demand: daemon (pins, free space, status)
+Documentation=https://github.com/Breedible/onedrive-linux-ondemand
+After=onedrive-ondemand-mount.service
+
+[Service]
+Type=simple
+Environment=PYTHONPATH=@SOURCE_DIR@
+# Print log lines straight away, so journalctl shows them in time.
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@PYTHON@ -m onedrive_ondemand daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

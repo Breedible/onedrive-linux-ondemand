@@ -11,8 +11,9 @@ APP_NAME = "onedrive-ondemand"
 # are left alone.
 REMOTE_NAME = "onedrive-ondemand"
 
-# The systemd user service that runs `rclone mount`.
+# The systemd user services: one runs `rclone mount`, one runs our daemon.
 MOUNT_SERVICE = "onedrive-ondemand-mount.service"
+DAEMON_SERVICE = "onedrive-ondemand-daemon.service"
 
 
 def _xdg(variable, fallback):
@@ -51,6 +52,8 @@ DEFAULT_SETTINGS = {
     "write_back_seconds": 5,
     # How often rclone asks OneDrive what changed.
     "poll_interval_minutes": 1,
+    # Uploads and pin downloads wait while this is true (tray: Pause).
+    "paused": False,
 }
 
 

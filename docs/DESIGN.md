@@ -78,7 +78,7 @@ A SQLite file holds **rules**, not per-file flags:
 ```
 rules(item_id TEXT PRIMARY KEY,      -- OneDrive's permanent ID for the item
       path TEXT,                     -- last known path, relative to the OneDrive root
-      state TEXT,                    -- 'pinned' or 'online'
+      state TEXT,                    -- 'pinned', 'online' or 'local'
       created_at TEXT,
       last_seen TEXT)                -- last time we confirmed the path
 ```
@@ -88,6 +88,8 @@ rules(item_id TEXT PRIMARY KEY,      -- OneDrive's permanent ID for the item
   later, which matches Windows.
 - "Free up space" on a file inside a pinned folder adds an `online` rule
   for that file only.
+- Unpinning a file inside a pinned folder adds a `local` rule: not pinned,
+  but not freed straight away either (added in milestone b).
 - "Locally available" is the default when no rule applies.
 
 ### Pins follow renames and moves
@@ -188,6 +190,11 @@ it fully. Pinned folders are re-scanned every 15 minutes (and after remote
 changes) to catch new files. Before pinning a folder, the CLI/menu shows its
 size and warns if it won't fit.
 
+**Pause** (tray, `onedrive-ondemand pause`) uses rclone's
+`vfs/queue-set-expiry`: while paused, the daemon pushes every waiting upload
+a year into the future; resume sets them back to "now". An upload that has
+already started finishes. Pin downloads also wait. Opening files still works.
+
 ## 6. Settings (defaults)
 
 | Setting | Default |
@@ -254,7 +261,7 @@ history is still the fallback. We will say "best effort" in the README, not
 ```
 onedrive_ondemand/
   config.py     paths and settings
-  rclone.py     builds the rclone command line; sign-in; our rclone.conf
+  rclone.py     builds the rclone command line; sign-in; our rclone.conf; rc client
   graph.py      a few direct Microsoft Graph calls (drive, folder, item lookup)
   mount.py      prepares ~/OneDrive, starts rclone; cleans up after it stops
   setup_wizard.py  `setup`: sign-in, folder, service, upload-location check

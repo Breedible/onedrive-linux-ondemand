@@ -91,3 +91,38 @@ def diagnose(access_token):
         except GraphError as error:
             results.append(f"GET {path}: {error}")
     return results
+
+
+def item_by_id(access_token, item_id):
+    """Look an item up by its permanent ID. None if it's gone (deleted or never existed)."""
+    path = f"/me/drive/items/{urllib.parse.quote(item_id)}?$select=id,name,parentReference,deleted,folder"
+    try:
+        item = _request(access_token, "GET", path)
+    except GraphError as error:
+        if error.status == 404:
+            return None
+        raise
+    return None if "deleted" in item else item
+
+
+def path_in_folder(item, remote_folder):
+    """Where an item is, relative to the folder this client shows.
+
+    Returns e.g. "Projects/notes/notes.docx", "" for the shown folder itself,
+    or None if the item is somewhere outside it.
+    """
+    parent = item.get("parentReference", {}).get("path")
+    if parent is None or "root:" not in parent:
+        return None
+    # parent looks like "/drive/root:/LinuxClientTest/Projects" (personal) or
+    # "/drives/<id>/root:/..." (business). Checked 2026-10-30: names with
+    # spaces come back as-is, not percent-encoded, so we don't decode.
+    parent = parent.split("root:", 1)[1].strip("/")
+    full = f"{parent}/{item['name']}".strip("/")
+    if not remote_folder:
+        return full
+    if full == remote_folder:
+        return ""
+    if full.startswith(remote_folder + "/"):
+        return full[len(remote_folder) + 1:]
+    return None

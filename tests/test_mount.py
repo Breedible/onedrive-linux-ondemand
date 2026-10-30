@@ -6,10 +6,14 @@ from onedrive_ondemand import config, setup_wizard
 
 
 class UnitTemplateTest(unittest.TestCase):
-    def test_template_has_placeholders_and_notify(self):
-        text = setup_wizard.UNIT_TEMPLATE.read_text()
-        self.assertIn("@SOURCE_DIR@", text)
-        self.assertIn("@PYTHON@", text)
+    def test_templates_have_placeholders(self):
+        for name in (config.MOUNT_SERVICE, config.DAEMON_SERVICE):
+            text = (setup_wizard.SOURCE_DIR / "data" / name).read_text()
+            self.assertIn("@SOURCE_DIR@", text)
+            self.assertIn("@PYTHON@", text)
+
+    def test_mount_unit_waits_for_rclone_and_cleans_up(self):
+        text = (setup_wizard.SOURCE_DIR / "data" / config.MOUNT_SERVICE).read_text()
         self.assertIn("Type=notify", text)
         self.assertIn("ExecStopPost=", text)
 

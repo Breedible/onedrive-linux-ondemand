@@ -5,10 +5,12 @@ uploading). This module only builds its command lines and reads its output.
 """
 
 import base64
+import http.client
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 from pathlib import Path
 
@@ -186,3 +188,55 @@ def read_token(path=config.RCLONE_CONF):
     if not values or "token" not in values:
         return None
     return json.loads(values["token"])
+
+
+# --- Remote control (rc) API ---------------------------------------------
+# The running `rclone mount` answers JSON requests on a private unix socket.
+# See https://rclone.org/rc/ for the list of commands.
+
+class RcError(Exception):
+    """rclone isn't running, or it answered a request with an error."""
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """An HTTP connection that goes through a unix socket instead of the network."""
+
+    def __init__(self, socket_path, timeout):
+        super().__init__("localhost", timeout=timeout)
+        self.socket_path = str(socket_path)
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(self.socket_path)
+
+
+def rc(command, params=None, socket_path=config.RC_SOCKET, timeout=30):
+    """Send one command to the running rclone mount and return its answer (a dict)."""
+    connection = _UnixHTTPConnection(socket_path, timeout)
+    try:
+        connection.request("POST", "/" + command, body=json.dumps(params or {}),
+                           headers={"Content-Type": "application/json"})
+        response = connection.getresponse()
+        body = response.read()
+    except OSError as error:
+        raise RcError(f"rclone isn't reachable ({error})") from None
+    finally:
+        connection.close()
+    try:
+        answer = json.loads(body) if body else {}
+    except ValueError:
+        raise RcError(f"rclone sent an unreadable answer to {command}") from None
+    if response.status != 200:
+        raise RcError(answer.get("error", f"{command} failed with HTTP {response.status}"))
+    return answer
+
+
+def remote_fs(settings):
+    """The rclone "fs" string for rc commands, e.g. "onedrive-ondemand:LinuxClientTest"."""
+    return f"{config.REMOTE_NAME}:{settings['remote_folder']}"
+
+
+def item_id_from_rclone(rclone_id):
+    """rclone gives OneDrive IDs as "<driveID>#<itemID>"; Graph wants just the item ID."""
+    return rclone_id.split("#", 1)[-1]
