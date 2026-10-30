@@ -1,0 +1,4 @@
+# This is a Linux project: always use LF line endings, even when edited on Windows.
+* text=auto eol=lf
+*.png binary
+*.svg text eol=lf
