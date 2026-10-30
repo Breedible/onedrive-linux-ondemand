@@ -64,7 +64,10 @@ class _Handler(socketserver.StreamRequestHandler):
             answer = self.server.handle_message(message)
         except Exception as error:  # never let one bad request kill the server
             answer = {"ok": False, "error": str(error)}
-        self.wfile.write(json.dumps(answer).encode() + b"\n")
+        try:
+            self.wfile.write(json.dumps(answer).encode() + b"\n")
+        except BrokenPipeError:
+            pass  # the asker gave up waiting (e.g. Nemo's short timeout)
 
 
 class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):

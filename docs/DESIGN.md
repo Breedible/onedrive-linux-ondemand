@@ -229,7 +229,7 @@ history is still the fallback. We will say "best effort" in the README, not
 
 | Situation | What happens / what we do |
 |---|---|
-| Nemo thumbnails | To show a small preview picture instead of a generic icon, Nemo reads the whole image/video, which **downloads it**. Setup asks once whether to allow that. First, milestone (c) checks whether Nemo's existing "Show thumbnails: Local files only" setting already treats the rclone mount as remote. If it does, nothing needs changing. |
+| Nemo thumbnails | To show a small preview picture instead of a generic icon, Nemo reads the whole image/video, which **downloads it**. Checked in milestone (c): GIO reports the rclone mount as **local** (`filesystem::remote: FALSE`), so "Local files only" does *not* protect it. Setup asks once; if you say no, it sets Nemo's per-folder "Show Thumbnails" switch off for `~/OneDrive` (`metadata::show-thumbnails=false`) and turns on `inherit-show-thumbnails` so sub-folders follow. Other folders are unaffected. |
 | Network drop | rclone retries with back-off. Tray shows "Offline". Uploads resume automatically. |
 | Sign-in expires (90 days unused, or password change) | Mount fails to talk to OneDrive. Tray shows "Sign in again", which re-runs the browser sign-in. |
 | Throttling (HTTP 429) | rclone backs off automatically. Your own client ID reduces this (optional, later). |
@@ -271,7 +271,7 @@ onedrive_ondemand/
   ipc.py        JSON messages over a unix socket (daemon <-> CLI/tray/Nemo)
   cli.py        command-line interface
   tray.py       tray icon
-nemo/onedrive_ondemand_nemo.py   Nemo extension
+nemo/onedrive_ondemand_nemo.py   Nemo extension (batched, 1 s timeout: Nemo never waits long)
 bin/            onedrive-ondemand launcher for running from the source folder
 data/           emblem icons, systemd units, autostart .desktop file
 packaging/      build-deb.sh

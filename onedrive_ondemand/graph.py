@@ -95,7 +95,7 @@ def diagnose(access_token):
 
 def item_by_id(access_token, item_id):
     """Look an item up by its permanent ID. None if it's gone (deleted or never existed)."""
-    path = f"/me/drive/items/{urllib.parse.quote(item_id)}?$select=id,name,parentReference,deleted,folder"
+    path = f"/me/drive/items/{urllib.parse.quote(item_id)}?$select=id,name,parentReference,deleted,folder,webUrl"
     try:
         item = _request(access_token, "GET", path)
     except GraphError as error:

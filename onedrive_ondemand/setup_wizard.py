@@ -170,6 +170,42 @@ def wait_for_mount(mount_path, seconds=30):
     return False
 
 
+def nemo_python_installed():
+    return subprocess.run(["dpkg-query", "-W", "-f=${Status}", "nemo-python"],
+                          capture_output=True, text=True).stdout.startswith("install ok")
+
+
+def install_nemo_extension():
+    """Copy our Nemo extension and emblem icons into your home folder."""
+    text = (SOURCE_DIR / "nemo" / "onedrive_ondemand_nemo.py").read_text(encoding="utf-8")
+    text = text.replace("@SOURCE_DIR@", str(SOURCE_DIR))
+    config.NEMO_EXTENSION_DIR.mkdir(parents=True, exist_ok=True)
+    (config.NEMO_EXTENSION_DIR / "onedrive_ondemand_nemo.py").write_text(text, encoding="utf-8")
+    shutil.copytree(SOURCE_DIR / "data" / "icons" / "hicolor", config.ICON_DIR, dirs_exist_ok=True)
+    if not nemo_python_installed():
+        print("\nNemo emblems and the OneDrive right-click menu need one more package:\n"
+              "  sudo apt install nemo-python")
+
+
+def apply_thumbnail_choice(show, mount_path):
+    """Turn Nemo's picture previews on or off for ~/OneDrive only (DESIGN.md §8).
+
+    Nemo treats the rclone mount as a local disk, so with its normal setting
+    ("Local files only") it would download every picture just to draw a
+    preview. Nemo has a per-folder "Show Thumbnails" switch, stored as
+    metadata::show-thumbnails; with inherit-show-thumbnails on, sub-folders
+    follow the folder above them.
+    """
+    if show:
+        subprocess.run(["gio", "set", "-t", "unset", str(mount_path), "metadata::show-thumbnails"],
+                       capture_output=True)
+    else:
+        subprocess.run(["gsettings", "set", "org.nemo.preferences", "inherit-show-thumbnails", "true"],
+                       capture_output=True)
+        subprocess.run(["gio", "set", str(mount_path), "metadata::show-thumbnails", "false"],
+                       capture_output=True)
+
+
 def run():
     print("OneDrive On-Demand setup\n")
     check_requirements()
@@ -213,5 +249,15 @@ def run():
                  f"If '{PROBE_NAME}' is at the top of your OneDrive (onedrive.com), "
                  "you can delete it.")
 
+    install_nemo_extension()
+    if settings.get("thumbnails") is None:
+        print("\nNemo can show small previews of pictures and videos, but to make one it")
+        print("has to download the whole file. Browsing a folder of photos would then")
+        print("download all of them.")
+        settings["thumbnails"] = ask("Show previews in the OneDrive folder anyway?", False)
+        config.save_settings(settings)
+    apply_thumbnail_choice(settings["thumbnails"], mount_path)
+
     print(f"\nDone. Your OneDrive folder '{folder}' is now at {mount_path}")
     print("It starts by itself every time you log in.")
+    print("Close all Nemo windows once (or run:  nemo -q) so it loads the OneDrive menu.")

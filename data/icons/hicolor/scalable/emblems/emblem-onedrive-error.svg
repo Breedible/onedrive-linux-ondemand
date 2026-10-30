@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <!-- Error: red circle with a white cross -->
+  <circle cx="8" cy="8" r="7.2" fill="#d42c2c" stroke="#ffffff" stroke-width="0.8"/>
+  <path d="M5.4 5.4l5.2 5.2M10.6 5.4l-5.2 5.2" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round"/>
+</svg>

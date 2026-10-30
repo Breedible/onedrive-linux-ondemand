@@ -187,8 +187,9 @@ class Daemon:
 
     # --- state of files ----------------------------------------------------
 
-    def state_of(self, rel, rules):
-        is_dir = self.is_dir(rel)
+    def state_of(self, rel, rules, is_dir=None):
+        if is_dir is None:
+            is_dir = self.is_dir(rel)  # may have to ask OneDrive for a folder listing
         rule = self.store.effective_rule(rel, rules)
         with self.lock:
             queue_item = self.queue.get(rel)
@@ -210,6 +211,7 @@ class Daemon:
             "pin": self.cmd_pin, "unpin": self.cmd_unpin, "free": self.cmd_free,
             "activity": self.cmd_activity, "pause": self.cmd_pause, "resume": self.cmd_resume,
             "settings": self.cmd_settings, "upkeep": self.cmd_upkeep,
+            "weburl": self.cmd_weburl,
         }
         if cmd not in handlers:
             return {"ok": False, "error": f"unknown command {cmd!r}"}
@@ -225,9 +227,13 @@ class Daemon:
     def cmd_status(self, message):
         rules = self.store.rules()
         states = {}
+        # Nemo already knows which paths are folders; it tells us, which saves
+        # a possibly slow look through the mount.
+        dirs = set(message["dirs"]) if "dirs" in message else None
         for path in message.get("paths", []):
             try:
-                states[path] = self.state_of(self.to_rel(path), rules)
+                is_dir = (path in dirs) if dirs is not None else None
+                states[path] = self.state_of(self.to_rel(path), rules, is_dir)
             except (UserError, cachemod.CacheError):
                 states[path] = "outside"
         return {"states": states}
@@ -370,6 +376,14 @@ class Daemon:
             self.save_settings()
             self.upkeep_now.set()
         return {"settings": {k: self.settings[k] for k in ("evict_after_days", "min_free_space_percent")}}
+
+    def cmd_weburl(self, message):
+        """The onedrive.com address of a file or folder (Nemo: "View online")."""
+        rel = self.to_rel(message["path"])
+        item = graph.item_by_id(self.access_token(), self.item_id(rel))
+        if item is None or "webUrl" not in item:
+            raise UserError(f"Couldn't find {rel} on OneDrive.")
+        return {"url": item["webUrl"]}
 
     def cmd_upkeep(self, message):
         """Run the 5-minute pass right now and wait for the result (for testing)."""

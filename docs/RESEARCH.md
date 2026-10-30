@@ -174,6 +174,26 @@ files):
 - Not tested yet: pulling the network cable (offline behaviour), and a
   OneDrive Business account.
 
+## 7. Milestone (c) results (2026-10-30)
+
+- **Nemo emblem names:** Nemo shows the icon `emblem-<name>` for
+  `add_emblem("<name>")` (nemo-file.c, `nemo_file_get_emblem_icons`).
+- **nemo-python** supports `update_file_info_full` (async answers), so the
+  extension collects requests for 30 ms and asks the daemon once per batch.
+  500 status lookups took 0.03 s.
+- Right after the mount restarts, a status request can take over 1 s
+  because the folder listing has to come from OneDrive. Nemo tells the
+  extension which items are folders, and it passes that on so the daemon
+  doesn't have to look through the mount.
+- **Thumbnails:** `gio info -f ~/OneDrive` gives `filesystem::type: fuse`,
+  `filesystem::remote: FALSE`. GLib only counts `cifs coda fuse.sshfs
+  ncpfs nfs4` (and a few others) as remote, and rclone's Linux mount
+  rejects `-o subtype=...` ("-o/--option not supported with this FUSE
+  backend"), so we can't pose as sshfs. Nemo's per-folder
+  `metadata::show-thumbnails` switch, with `inherit-show-thumbnails`, does
+  the job (nemo-file.c, `nemo_file_should_show_thumbnail`). The metadata
+  survives a remount.
+
 ## Sources
 
 - rclone mount docs: https://rclone.org/commands/rclone_mount/

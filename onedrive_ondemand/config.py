@@ -37,6 +37,8 @@ CACHE_DIR = DATA_DIR / "cache"
 RC_SOCKET = RUNTIME_DIR / "rclone.sock"
 
 SYSTEMD_USER_DIR = _xdg("XDG_CONFIG_HOME", ".config") / "systemd" / "user"
+NEMO_EXTENSION_DIR = _xdg("XDG_DATA_HOME", ".local/share") / "nemo-python" / "extensions"
+ICON_DIR = _xdg("XDG_DATA_HOME", ".local/share") / "icons" / "hicolor"
 
 DEFAULT_SETTINGS = {
     # Where OneDrive appears in the file manager.
@@ -54,6 +56,9 @@ DEFAULT_SETTINGS = {
     "poll_interval_minutes": 1,
     # Uploads and pin downloads wait while this is true (tray: Pause).
     "paused": False,
+    # Show picture previews in Nemo for ~/OneDrive? Each preview downloads the
+    # whole picture. None = not asked yet (setup asks once). DESIGN.md §8.
+    "thumbnails": None,
 }
 
 
