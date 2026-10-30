@@ -23,7 +23,11 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
 - **Milestone (c) done 2026-10-30:** Nemo extension `nemo/onedrive_ondemand_nemo.py`
   (emblems, OneDrive submenu, View online), emblem icons, thumbnail choice.
   Needs the `nemo-python` package.
-- Next: **milestone (d)**: tray icon.
+- **Milestone (d) done 2026-10-30:** tray icon (`onedrive_ondemand/tray.py`):
+  status, open folder, view online, pause/resume, recent activity,
+  settings dialog, sign in again, notifications for problems. Autostart
+  entry and "OneDrive" menu entry installed by setup.
+- Next: **milestone (e)**: `.deb`, README install/uninstall/limitations.
 - Live tests go in `LinuxClientTest/_dev-tests/`. Other folders in there are the
   maintainer's own test files: only ever read them, never change them.
 - Milestones run in order a → f. After each one: explain in plain language

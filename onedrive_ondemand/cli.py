@@ -37,20 +37,9 @@ def ask_daemon(cmd, **args):
 
 def show_info():
     from onedrive_ondemand.daemon import human
+    from onedrive_ondemand.status import summarize
     info = ask_daemon("info")
-    if not info["mounted"]:
-        print(f"{info['mount_path']} is NOT mounted.  Start it with:  "
-              "systemctl --user start onedrive-ondemand-mount")
-    elif info["paused"]:
-        print("Paused: uploads and pin downloads are waiting.")
-    elif info["online"] is False:
-        print("Offline: downloaded files work, uploads wait.")
-    elif info["upload_errors"] or info["pin_errors"]:
-        print("There are problems; see:  onedrive-ondemand activity")
-    elif info["queued"] or info["pinning"]:
-        print("Syncing.")
-    else:
-        print("Up to date.")
+    print(summarize(info)[1])
     print(f"  OneDrive folder:   {info['folder']}  ->  {info['mount_path']}")
     print(f"  Waiting to upload: {info['queued']} ({info['uploading']} uploading now)")
     print(f"  Pin downloads:     {info['pinning']} waiting")
@@ -90,6 +79,8 @@ def main():
                    help="free files not opened for this many days (0 = never)")
     p.add_argument("--min-free-space", type=float, metavar="PERCENT",
                    help="keep at least this much of the disk free")
+    commands.add_parser("tray", help="show the tray icon")
+    commands.add_parser("open", help="open the OneDrive folder (and start the tray icon)")
     # These are run by the systemd services, not by people.
     commands.add_parser("daemon", help="(used by the service) run the background daemon")
     commands.add_parser("mount", help="(used by the service) start rclone mount")
@@ -107,6 +98,14 @@ def main():
     elif args.command == "mount-stopped":
         from onedrive_ondemand import mount
         mount.stopped()
+    elif args.command == "open":
+        import subprocess
+        from onedrive_ondemand import config, setup_wizard
+        setup_wizard.start_tray(sys.argv[0] if os.path.isabs(sys.argv[0]) else "onedrive-ondemand")
+        subprocess.Popen(["xdg-open", str(config.mount_path(config.load_settings()))])
+    elif args.command == "tray":
+        from onedrive_ondemand import tray
+        tray.main()
     elif args.command == "daemon":
         from onedrive_ondemand import daemon
         daemon.main()

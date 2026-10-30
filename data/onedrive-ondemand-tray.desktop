@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OneDrive tray icon
+Comment=Shows OneDrive On-Demand sync status
+Exec=@LAUNCHER@ tray
+Icon=@ICON@
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

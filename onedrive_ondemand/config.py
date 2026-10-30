@@ -39,6 +39,8 @@ RC_SOCKET = RUNTIME_DIR / "rclone.sock"
 SYSTEMD_USER_DIR = _xdg("XDG_CONFIG_HOME", ".config") / "systemd" / "user"
 NEMO_EXTENSION_DIR = _xdg("XDG_DATA_HOME", ".local/share") / "nemo-python" / "extensions"
 ICON_DIR = _xdg("XDG_DATA_HOME", ".local/share") / "icons" / "hicolor"
+AUTOSTART_DIR = _xdg("XDG_CONFIG_HOME", ".config") / "autostart"
+APPLICATIONS_DIR = _xdg("XDG_DATA_HOME", ".local/share") / "applications"
 
 DEFAULT_SETTINGS = {
     # Where OneDrive appears in the file manager.

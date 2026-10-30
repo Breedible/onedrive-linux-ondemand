@@ -194,6 +194,19 @@ files):
   the job (nemo-file.c, `nemo_file_should_show_thumbnail`). The metadata
   survives a remount.
 
+## 8. Milestone (d) results (2026-10-30)
+
+- `XApp.StatusIcon` registers on D-Bus (`org.x.StatusIcon.*`) and shows in
+  Cinnamon's `xapp-status` applet. **Catch:** the panel only finds icons
+  added to the theme *after* Cinnamon started once Cinnamon restarts. Until
+  then the icon showed as a blank placeholder. Passing the SVG's full path as
+  the icon name works straight away (other apps do the same).
+- Checked through D-Bus: the icon and tooltip follow the daemon
+  (Paused ↔ Up to date) within the 2 s update.
+- Pause from the tray menu worked (simulated click via XTest).
+- One tray at a time: a second start sees the lock in
+  `/run/user/<uid>/onedrive-ondemand/tray.lock` and exits.
+
 ## Sources
 
 - rclone mount docs: https://rclone.org/commands/rclone_mount/

@@ -81,6 +81,25 @@ def sign_in():
     print(f"Saved the sign-in to {config.RCLONE_CONF} (only you can read it).")
 
 
+def sign_in_again():
+    """Browser sign-in without a terminal (tray menu: "Sign in again").
+
+    Must be the same OneDrive account as before. Restarts the services so
+    rclone picks up the new token.
+    """
+    values = rclone.read_rclone_conf() or {}
+    token = rclone.authorize()
+    drive = graph.my_drive(json.loads(token)["access_token"])
+    if values.get("drive_id") and drive["id"] != values["drive_id"]:
+        raise RuntimeError("That's a different OneDrive account. To switch accounts, "
+                           "run:  onedrive-ondemand setup")
+    systemctl("stop", config.DAEMON_SERVICE)
+    systemctl("stop", config.MOUNT_SERVICE)
+    rclone.write_rclone_conf(token, drive["id"], drive["driveType"])
+    systemctl("start", config.MOUNT_SERVICE)
+    systemctl("start", config.DAEMON_SERVICE)
+
+
 def keep_sign_in():
     """Reuse the saved sign-in. Tidies configs written by older versions."""
     values = rclone.read_rclone_conf()
@@ -187,6 +206,25 @@ def install_nemo_extension():
               "  sudo apt install nemo-python")
 
 
+def install_desktop_files():
+    """Start the tray icon at login, add "OneDrive" to the menu, and start the tray now."""
+    launcher = str(SOURCE_DIR / "bin" / "onedrive-ondemand")
+    icon = str(config.ICON_DIR / "scalable" / "status" / "onedrive-ondemand-ok.svg")
+    for name, folder in (("onedrive-ondemand-tray.desktop", config.AUTOSTART_DIR),
+                         ("onedrive-ondemand.desktop", config.APPLICATIONS_DIR)):
+        text = (SOURCE_DIR / "data" / name).read_text(encoding="utf-8")
+        text = text.replace("@LAUNCHER@", launcher).replace("@ICON@", icon)
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_text(text, encoding="utf-8")
+    start_tray(launcher)
+
+
+def start_tray(launcher):
+    """Start the tray icon in the background (it exits by itself if already running)."""
+    subprocess.Popen([launcher, "tray"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+
+
 def apply_thumbnail_choice(show, mount_path):
     """Turn Nemo's picture previews on or off for ~/OneDrive only (DESIGN.md §8).
 
@@ -250,6 +288,7 @@ def run():
                  "you can delete it.")
 
     install_nemo_extension()
+    install_desktop_files()
     if settings.get("thumbnails") is None:
         print("\nNemo can show small previews of pictures and videos, but to make one it")
         print("has to download the whole file. Browsing a folder of photos would then")

@@ -118,6 +118,7 @@ class Daemon:
         self.reported_upload_errors = set()
         self.rclone_ok = False         # is the mount's rc socket answering?
         self.online = None             # can rclone reach OneDrive? (None = unknown)
+        self.signin_needed = False     # OneDrive rejected the saved sign-in
         self.pin_jobs = queue.Queue()
         self.pin_pending = set()       # files queued or downloading for a pin
         self.pin_errors = {}           # path -> error message
@@ -247,6 +248,7 @@ class Daemon:
                 "mounted": os.path.ismount(self.mount),
                 "rclone": self.rclone_ok,
                 "online": self.online,
+                "signin_needed": self.signin_needed,
                 "paused": self.settings.get("paused", False),
                 "queued": len(self.queue),
                 "uploading": uploading,
@@ -533,17 +535,32 @@ class Daemon:
 
     # --- the 5-minute pass ---------------------------------------------------
 
+    def check_online(self):
+        """Can rclone reach OneDrive, and is the sign-in still accepted?"""
+        try:
+            rclone.rc("operations/about", {"fs": self.fs}, timeout=60)
+            self.online, self.signin_needed = True, False
+        except rclone.RcError as error:
+            text = str(error).lower()
+            # Expired or revoked sign-in (e.g. unused for 90 days, password changed).
+            expired = any(word in text for word in ("invalid_grant", "unauthorized", "401", "aadsts"))
+            if expired and not self.signin_needed:
+                self.store.log("error", None, "OneDrive no longer accepts the saved sign-in. "
+                                              "Sign in again (tray menu, or: onedrive-ondemand setup).")
+            self.signin_needed = expired
+            self.online = False if self.rclone_ok else None
+
+    def online_loop(self):
+        """Check the connection every minute (the full upkeep pass is every 5)."""
+        self.check_online()
+
     def upkeep(self):
         """Follow renames, top up pins, free space. Returns a short summary."""
         with self.upkeep_lock:
             return self._upkeep()
 
     def _upkeep(self):
-        try:
-            rclone.rc("operations/about", {"fs": self.fs}, timeout=60)
-            self.online = True
-        except rclone.RcError:
-            self.online = False if self.rclone_ok else None
+        self.check_online()
 
         all_checked = self.check_rules()
         queued = 0
@@ -603,7 +620,9 @@ class Daemon:
 
         threads = [threading.Thread(target=self.loop, args=(self.poll_queue, QUEUE_POLL_SECONDS),
                                     name="uploads", daemon=True),
-                   threading.Thread(target=self.upkeep_loop, name="upkeep", daemon=True)]
+                   threading.Thread(target=self.upkeep_loop, name="upkeep", daemon=True),
+                   threading.Thread(target=self.loop, args=(self.online_loop, 60),
+                                    name="online", daemon=True)]
         threads += [threading.Thread(target=self.pin_worker, name=f"pins-{n}", daemon=True)
                     for n in range(PIN_WORKERS)]
         for thread in threads:

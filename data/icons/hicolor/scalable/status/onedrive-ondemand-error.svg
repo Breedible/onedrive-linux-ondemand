@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
+  <!-- Problem: cloud with a red badge -->
+  <path d="M6.5 19h11.2a4.3 4.3 0 0 0 .5-8.57A6 6 0 0 0 6.6 9.2 4.9 4.9 0 0 0 6.5 19z" fill="#1d6fd6" stroke="#ffffff" stroke-width="1.3" stroke-linejoin="round"/>
+  <circle cx="18" cy="17" r="5" fill="#d42c2c" stroke="#ffffff" stroke-width="1"/><path d="M18 14.2v3.4" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round"/><circle cx="18" cy="19.7" r=".95" fill="#ffffff"/>
+</svg>

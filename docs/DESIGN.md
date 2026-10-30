@@ -270,10 +270,11 @@ onedrive_ondemand/
   daemon.py     main loop: eviction, pin downloads, status, activity
   ipc.py        JSON messages over a unix socket (daemon <-> CLI/tray/Nemo)
   cli.py        command-line interface
+  status.py     one-line status summary shared by CLI and tray
   tray.py       tray icon
 nemo/onedrive_ondemand_nemo.py   Nemo extension (batched, 1 s timeout: Nemo never waits long)
 bin/            onedrive-ondemand launcher for running from the source folder
-data/           emblem icons, systemd units, autostart .desktop file
+data/           icons, systemd units, autostart and menu .desktop files
 packaging/      build-deb.sh
 tests/          unit tests (fake cache folder, no network)
 ```

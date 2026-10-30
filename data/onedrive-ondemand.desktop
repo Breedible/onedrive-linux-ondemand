@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OneDrive
+Comment=Open your OneDrive folder (files download when you open them)
+Exec=@LAUNCHER@ open
+Icon=@ICON@
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=onedrive;cloud;microsoft;sync;
