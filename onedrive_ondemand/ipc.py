@@ -1,7 +1,8 @@
 """How the CLI, Nemo extension and tray icon talk to the daemon.
 
-One JSON message per line over a unix socket in /run/user/<uid>/onedrive-ondemand/
-(a folder only you can open). Each connection carries one request and one answer:
+Each account's daemon listens on its own unix socket, in
+/run/user/<uid>/onedrive-ondemand/<account>/ (a folder only you can open).
+One JSON message per line; each connection carries one request and one answer:
 
     -> {"cmd": "status", "paths": ["/home/me/OneDrive/a.txt"]}
     <- {"ok": true, "states": {"/home/me/OneDrive/a.txt": "local"}}
@@ -15,9 +16,6 @@ import socket
 import socketserver
 import threading
 
-from onedrive_ondemand import config
-
-DAEMON_SOCKET = config.RUNTIME_DIR / "daemon.sock"
 MAX_MESSAGE = 16 * 1024 * 1024  # 16 MB is plenty, even for thousands of paths
 
 
@@ -25,8 +23,8 @@ class DaemonNotRunning(Exception):
     pass
 
 
-def request(cmd, socket_path=DAEMON_SOCKET, timeout=10, **args):
-    """Send one request to the daemon and return its answer (a dict).
+def request(socket_path, cmd, timeout=10, **args):
+    """Send one request to a daemon (Account.daemon_socket) and return its answer (a dict).
 
     Raises DaemonNotRunning if nothing is listening.
     """
@@ -74,7 +72,7 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
 
 
-def serve(handle_message, socket_path=DAEMON_SOCKET):
+def serve(handle_message, socket_path):
     """Start answering requests in a background thread. Returns the server.
 
     `handle_message(dict) -> dict` is called for each request.

@@ -225,6 +225,87 @@ files):
 - Server-side copy (`operations/copyfile` within the same remote) works on
   OneDrive Personal; the copy shows in `~/OneDrive` after the next poll.
 
+## 10. Offline behaviour (version 0.2, 2026-10-30)
+
+The maintainer reported: offline, *no* file would open, downloaded or not,
+and when the network came back a bunch of them opened at once. Reproduced in
+a test container (Ubuntu 24.04, rclone 1.60 from Ubuntu, a local WebDAV
+server as a stand-in for OneDrive, stopped to simulate "offline"; same
+mount flags as ours). The VFS code involved is the same in rclone 1.76
+(checked in its source: `vfs/dir.go` `_readDir`,
+`vfs/vfscache/downloaders/downloaders.go`).
+
+| Test | Result |
+|---|---|
+| Open a fully downloaded file, mount running, network gone | Opens instantly (16 ms). |
+| Open an online-only file, network gone, default `--low-level-retries 10` | The program **hangs for over 3 minutes**, then gets "Input/output error". rclone's downloader retries 11 times, each try itself retrying 10 times. When the network comes back during the wait, the file opens: that's "a bunch opened at once". |
+| Same, with `--low-level-retries 2` | Fails after **39 s**. (Changing it at run time with `options/set` doesn't help: the backend reads it once at start.) |
+| Open a file in a folder not opened since the mount started, network gone | Fails after ~40 s: the folder has to be listed first. |
+| **Restart the mount while offline**, then open a downloaded file | **"Input/output error" for everything**, even `ls` of the top folder. rclone keeps folder listings only in memory, and has no fallback to its cache (`_readDir` just returns the error). |
+| `rclone mount <cache folder> --read-only --files-from <list>` | Shows exactly the listed (fully downloaded) files, their contents are right, writing gives "Read-only file system". |
+
+So the likely causes of what the maintainer saw: online-only files (and the
+picture previews Nemo was making, which download each photo) hanging, and
+any folder not opened since the mount started, or the mount having
+restarted, failing. Changes made (DESIGN.md §4): `--low-level-retries 3`,
+reading all folder listings after start and every 15 minutes, a read-only
+"offline mount" of the downloaded files when OneDrive can't be reached at
+start, a quick 15 s connection check, and a tray message explaining why a
+file can't open. The offline mount was also run through our real
+`mount.py` code path (forced offline): only the fully downloaded file
+showed, a partly downloaded one was hidden, writing was refused, and
+`mount-stopped` cleaned up.
+
+**Not yet measured with OneDrive itself** (to do on the maintainer's PC):
+how long an online-only file takes to fail with `--low-level-retries 3`
+(expected under a minute), and the switch back from the offline mount.
+
+Also confirmed in this test: rclone's `core/stats` `transferring` list
+includes VFS downloads (the file being opened), with `size`, `bytes`,
+`percentage`, `speedAvg` and `eta`. The tray's progress window uses it.
+
+## 11. Previews without downloading (version 0.2, 2026-10-30)
+
+Checked with Cinnamon's own thumbnail library (`libcinnamon-desktop4`
+6.0.0, the Ubuntu 24.04 build; Mint 22 has 6.x), the one Nemo uses, by
+calling `DesktopThumbnailFactory.generate_thumbnail` under `strace`:
+
+- A `.thumbnailer` file in `~/.local/share/thumbnailers/` **wins** over the
+  system's `gdk-pixbuf-thumbnailer` for the same type.
+- If that thumbnailer **fails**, the library reads the file itself to make a
+  preview. So our thumbnailer must always write *some* picture for OneDrive
+  files, or the file would be downloaded anyway.
+- When it succeeds, the library never opens the file.
+- No sandbox (no bubblewrap) in this version, so our thumbnailer can reach
+  the daemon's socket.
+
+End to end with our code: a "OneDrive" photo with the daemon stopped gave
+the grey stand-in; with a daemon serving a (simulated) OneDrive preview it
+gave that preview, scaled to 128 px; in both cases `strace` showed **no
+process opened the photo**. A photo outside OneDrive went to the normal
+thumbnailer as before. Previews saved by the library's `save_thumbnail` are
+found and deleted by our cleanup, both by address and by scanning a folder.
+
+Graph: `GET /drives/{drive-id}/root:/{path}:/thumbnails/0/medium` returns a
+ready-signed `url` for an image at most 176 px. We fetch that URL **without**
+our sign-in token, because it's on a different server.
+
+**Not yet tested on the maintainer's PC:** Nemo itself (rather than the
+library) using our thumbnailer, the deletion after leaving a folder, and
+Graph's preview call for real (personal and business).
+
+## 12. The .deb (version 0.2, 2026-10-30)
+
+`sudo apt install ./onedrive-ondemand_0.2.0_all.deb` on a clean Ubuntu 24.04
+container: all dependencies (including `nemo-python`, `pkexec`) came from the
+normal archive, the post-install message showed, and as a new user:
+`--version`, `accounts`, `status` ("no account set up yet"), `update`
+("latest version", from the real GitHub API), and `setup` (found Ubuntu's
+rclone 1.60 too old and offered rclone.org's installer) all behaved. The
+installed Nemo extension loads. The old package's `Depends: rclone (>= 1.75.0)`
+would have **failed** for anyone who installed rclone with rclone.org's
+script (it doesn't register with dpkg), so it was removed (DESIGN.md §10).
+
 ## Sources
 
 - rclone mount docs: https://rclone.org/commands/rclone_mount/

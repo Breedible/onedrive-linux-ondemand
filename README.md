@@ -3,12 +3,15 @@
 A Linux desktop client for Microsoft OneDrive that behaves like the Windows
 client's **Files On-Demand**, built for Linux Mint (Cinnamon / Nemo).
 
-> **Status: early version (0.1.0).** It works, but it's new. Read
+> **Status: early version (0.2.0).** It works, but it's new. Read
 > [Limitations](#limitations) first, and keep OneDrive's own recycle bin and
 > version history in mind as your safety net.
 
-- One folder, `~/OneDrive`, shows all your OneDrive files **without
-  downloading them**. A file downloads when you open it.
+- Each account gets one folder, like on Windows: `~/OneDrive - Personal`,
+  `~/OneDrive - Work`. It shows all your files **without downloading them**.
+  A file downloads when you open it.
+- **Several accounts** side by side (for example personal and work). Add or
+  sign out of accounts in the tray's Settings.
 - Right-click in Nemo → **OneDrive**:
   - **Always keep on this device**: download now and never free it.
   - **Free up space**: remove the downloaded copy; it stays on OneDrive.
@@ -16,97 +19,133 @@ client's **Files On-Demand**, built for Linux Mint (Cinnamon / Nemo).
 - Emblems in Nemo show each file's state:
   ☁ online-only · ✓ (outline) locally available · ✔ (solid) always kept ·
   ⟳ syncing · ✖ problem.
+- **Picture previews without downloading**: Nemo shows OneDrive's own small
+  previews of photos, videos and PDFs. They're deleted again a couple of
+  minutes after you leave the folder.
 - Files you haven't opened for 30 days are freed automatically, and space is
   freed when the disk gets full (both adjustable). Files you chose to always
   keep are never freed.
 - Changes you save upload automatically; changes made elsewhere appear
   within about a minute.
-- A tray icon shows the status, with Pause, Recent activity and Settings.
+- A **tray icon** shows the status, and spins while files transfer.
+  **Left-click** it to see what's downloading and uploading, with progress
+  bars, and recent activity. **Right-click** for the menu: Pause, Settings
+  and accounts, Check for updates.
 
 It's built on [rclone](https://rclone.org/), which does the downloading and
-uploading. This project adds pins, freeing space, status, Nemo integration and
-the tray. See [docs/DESIGN.md](docs/DESIGN.md) for how it works.
+uploading. This project adds pins, freeing space, status, Nemo integration,
+previews and the tray. See [docs/DESIGN.md](docs/DESIGN.md) for how it works.
 
 ## Install
 
-1. **rclone 1.75 or newer**, from rclone.org. The version in Mint's own
-   Software Manager is too old. Download `rclone-current-linux-amd64.deb`
-   from <https://rclone.org/downloads/> and install it:
-
-   ```bash
-   sudo apt install ./rclone-current-linux-amd64.deb
-   ```
-
-2. **This program**: download `onedrive-ondemand_<version>_all.deb` from the
+1. **Download** `onedrive-ondemand_<version>_all.deb` from the
    [Releases](https://github.com/Breedible/onedrive-linux-ondemand/releases)
-   page (or build it yourself, see [Development](#development)) and install it:
+   page (or build it yourself, see [Development](#development)) and install
+   it, either by double-clicking it or with:
 
    ```bash
-   sudo apt install ./onedrive-ondemand_0.1.0_all.deb
+   sudo apt install ./onedrive-ondemand_0.2.0_all.deb
    ```
 
    This also installs `nemo-python`, `fuse3` and the other small things it needs.
 
-3. **Set up**: open the menu → **OneDrive**, or run:
+2. **Set up**: open the menu → **OneDrive** (or click the OneDrive icon in the
+   panel after logging in again, or run `onedrive-ondemand setup`). A window
+   guides you through it:
+   - If rclone 1.75 or newer isn't installed, setup offers to install it
+     from rclone.org (Mint's own rclone is too old). You type your password.
+   - Your browser opens the Microsoft sign-in page; sign in and allow access.
+   - You choose a name for the account ("Personal" or "Work" by default).
+   - Setup asks whether to show picture previews, then starts everything,
+     now and at every login.
 
-   ```bash
-   onedrive-ondemand setup
-   ```
+   **For now each account only shows one folder of its OneDrive,
+   `LinuxClientTest`** (setup offers to create it). Showing the whole drive
+   will be switched on after more testing.
 
-   Your browser opens the Microsoft sign-in page; sign in and allow access.
-   Setup asks whether Nemo may download pictures to show previews, then
-   starts everything, now and at every login.
-
-   **For now it only shows one folder of your OneDrive, `LinuxClientTest`**
-   (setup offers to create it). Showing the whole drive will be switched on
-   after more testing. The folder is set in `~/.config/onedrive-ondemand/config.json`.
-
-4. **Close all Nemo windows once** (or run `nemo -q`) so Nemo loads the
+3. **Close all Nemo windows once** (or run `nemo -q`) so Nemo loads the
    OneDrive menu.
+
+**Adding a work or school account:** tray → right-click → **Settings and
+accounts…** → **Add an account…** (or `onedrive-ondemand add-account`). If the
+sign-in page signs you straight in to your personal account, choose **Use
+another account**, or open the link it prints in a private browser window.
+Some organisations must approve rclone before you can sign in; if the sign-in
+page says you need an admin's approval, ask your IT department.
+
+## Updating
+
+Tray → right-click → **Check for updates…**. The tray also checks once a day
+and tells you when there's a new version. Installing it asks for your
+password, then restarts OneDrive (close files you have open from OneDrive
+first; changes waiting to upload are kept).
+
+Running from a source folder instead (a `git clone`)? Then "Check for
+updates" runs `git pull` there and restarts everything.
+
+**Updating from version 0.1:** after updating, run `onedrive-ondemand setup`
+once. It moves your existing setup (sign-in, downloaded files, pins and
+changes waiting to upload) to the new layout: your files then appear in
+`~/OneDrive - Personal` instead of `~/OneDrive`.
 
 ## Everyday use
 
-Use `~/OneDrive` like any other folder. The tray icon (a cloud) tells you
-if something needs attention. For scripts or troubleshooting there's also a
+Use the OneDrive folders like any other folder. The tray icon tells you if
+something needs attention. For scripts or troubleshooting there's also a
 command:
 
 ```bash
-onedrive-ondemand status                 # overall status
-onedrive-ondemand status ~/OneDrive/x    # state of one file
-onedrive-ondemand pin ~/OneDrive/Work    # always keep on this device
-onedrive-ondemand unpin ~/OneDrive/Work
-onedrive-ondemand free ~/OneDrive/Videos # free up space
-onedrive-ondemand activity               # recent uploads and problems
-onedrive-ondemand pause                  # pause uploads (and resume)
+onedrive-ondemand status                              # overall status of every account
+onedrive-ondemand status ~/"OneDrive - Personal"/x    # state of one file
+onedrive-ondemand pin ~/"OneDrive - Personal"/Work    # always keep on this device
+onedrive-ondemand unpin ~/"OneDrive - Personal"/Work
+onedrive-ondemand free ~/"OneDrive - Work"/Videos     # free up space
+onedrive-ondemand activity                            # recent uploads, downloads and problems
+onedrive-ondemand pause                               # pause uploads (and resume)
 onedrive-ondemand settings --evict-after-days 60 --min-free-space 15
+onedrive-ondemand accounts                            # list accounts
+onedrive-ondemand add-account                         # add an account
+onedrive-ondemand remove-account Work                 # sign out of one
+onedrive-ondemand update                              # check for a new version
 ```
+
+Add `--account Work` before the command to only affect one account, e.g.
+`onedrive-ondemand --account Work pause`.
 
 ## Limitations
 
 Linux has no equivalent of Windows' placeholder files, so some things work
 differently. Read these:
 
-- **`~/OneDrive` only shows files while the service is running.** If it isn't
-  (for example right at login, or after a crash), the folder looks empty and
-  is read-only. Your downloaded files are safe in
-  `~/.local/share/onedrive-ondemand/cache` and reappear when it starts.
-- **Offline:** downloaded and "always kept" files open and save normally;
-  saves upload when you're back online. Opening an online-only file fails.
-- **Deleting a file in `~/OneDrive` deletes it from OneDrive** (it goes to
-  the OneDrive recycle bin for 30 days), just like on Windows.
+- **The OneDrive folders only show files while OneDrive is running.** If it
+  isn't (for example right at login, or after a crash), a folder looks empty
+  and is read-only. Your downloaded files are safe in
+  `~/.local/share/onedrive-ondemand/accounts/` and reappear when it starts.
+- **Offline:**
+  - Downloaded and "always kept" files open and save normally; saves
+    upload when you're back online.
+  - Opening a file that isn't downloaded fails: the program trying to open
+    it waits for up to about a minute, then gets an error. The tray tells
+    you why.
+  - If OneDrive starts while you're offline (for example after a restart
+    without Wi-Fi), it shows only your downloaded files, **read-only**,
+    until you're back online. It then reconnects by itself as soon as no
+    program has a file from it open.
+- **Deleting a file in a OneDrive folder deletes it from OneDrive** (it goes
+  to the OneDrive recycle bin for 30 days), just like on Windows.
 - **Conflicts:** if the same file is changed on another device *and* here
   before your change uploads, this client keeps both: the other version
   is saved as `name (conflict copy <date>).ext` next to yours. This is
   **best effort**: if both changes happen within a few seconds the other
   version may only be in OneDrive's **version history** (onedrive.com →
   right-click the file → Version history).
-- **Previews:** Nemo has to download a picture or video to draw its
-  preview, so previews are off in `~/OneDrive` unless you allow them in
-  setup or in the tray's Settings.
-- Only **Nemo** shows emblems and the OneDrive menu; other programs just see
-  normal files.
-- One OneDrive account. OneDrive **Business** should work (rclone supports
-  it) but hasn't been tested yet.
+- **Previews** come from OneDrive, so you need to be online to see new ones
+  (offline you see a plain grey square). Files that are already downloaded
+  get normal previews made from the file.
+- Only **Nemo** shows emblems, the OneDrive menu and the no-download
+  previews; other programs just see normal files.
+- OneDrive **Business** (work or school) accounts should work, but haven't
+  been tested yet.
 - Your sign-in expires if the client isn't used for 90 days; the tray then
   offers **Sign in again**.
 - Names OneDrive doesn't allow (`" * : < > ? \ |`) are shown with
@@ -124,7 +163,7 @@ sudo apt remove onedrive-ondemand
 
 `uninstall` tells you if any change hasn't been uploaded yet. When it says
 nothing is waiting, you can delete the downloaded copies, settings and
-sign-in with the `rm -r` command it prints. Your files on OneDrive are never
+sign-ins with the `rm -r` command it prints. Your files on OneDrive are never
 touched.
 
 ## Development
@@ -139,6 +178,24 @@ a real OneDrive.
 python3 -m unittest discover -s tests -t .         # tests (no network needed)
 ./packaging/build-deb.sh                           # build dist/*.deb
 ```
+
+### Making a release
+
+The tray's "Check for updates" looks at this repository's GitHub releases.
+To publish one:
+
+1. Set `__version__` in `onedrive_ondemand/__init__.py` (e.g. `"0.2.1"`) and
+   commit it.
+2. Tag and push the tag:
+
+   ```bash
+   git tag v0.2.1
+   git push origin v0.2.1
+   ```
+
+GitHub then runs the tests, builds the `.deb` and publishes the release
+(`.github/workflows/release.yml`). Everyone's tray offers the update within
+a day.
 
 ## License
 

@@ -65,11 +65,9 @@ class GuardTest(unittest.TestCase):
                 self.copies.append(params["dstRemote"])
                 return {}
             raise AssertionError(command)
-        self.real_rc = conflicts.rclone.rc
-        conflicts.rclone.rc = fake_rc
+        self.daemon.rc = fake_rc
 
     def tearDown(self):
-        conflicts.rclone.rc = self.real_rc
         self.store.close()
         self.tmp.cleanup()
         self.fake.cleanup()

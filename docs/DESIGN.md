@@ -1,8 +1,11 @@
 # Design: onedrive-linux-ondemand
 
 Status: **approved 2026-10-30** (see §12). Milestones (a)–(f) built
-2026-10-30; changes found while testing are noted in §12 and in the sections. Research behind these
-decisions is in [RESEARCH.md](RESEARCH.md).
+2026-10-30; changes found while testing are noted in §12 and in the sections.
+Version 0.2 (2026-10-30, asked for by the maintainer after testing) adds
+several accounts (§13), an offline fallback (§4), transfer progress in the
+tray (§5), previews without downloading (§8) and updates (§14). Research
+behind these decisions is in [RESEARCH.md](RESEARCH.md).
 
 ## 1. What Linux can and cannot do (read this first)
 
@@ -16,20 +19,22 @@ Consequences we have to live with:
 
 | Windows | Our Linux version |
 |---|---|
-| `C:\Users\you\OneDrive` is a real folder on the disk. | `~/OneDrive` is a **mount point**. Files show there only while rclone is running. |
-| If OneDrive.exe isn't running, local files are still there. | If the mount isn't running, `~/OneDrive` looks **empty**. Your downloaded and pinned data is safe on disk (see §4), just not visible in that folder. |
+| `C:\Users\you\OneDrive` is a real folder on the disk. | `~/OneDrive - Personal` (one per account, §13) is a **mount point**. Files show there only while rclone is running. |
+| If OneDrive.exe isn't running, local files are still there. | If the mount isn't running, the folder looks **empty**. Your downloaded and pinned data is safe on disk (see §4), just not visible in that folder. |
 | Pin state is a file attribute stored in NTFS. | Pin state is kept in **our own small database**, because FUSE has nowhere to store it. |
 | Every app sees the cloud and pin states. | Only **Nemo** shows emblems, via our extension. Other apps just see normal files. |
-| Explorer knows not to download files just to draw thumbnails. | Nemo reads files to make thumbnails, so browsing a photo folder **downloads the photos**. See §8. |
+| Explorer knows not to download files just to draw thumbnails. | Nemo reads files to make thumbnails, which would **download the photos**. Our own thumbnailer serves OneDrive's server-side previews instead. See §8. |
 | Built-in "keep both" conflict handling. | rclone uploads last-writer-wins. We add a best-effort guard (§7), and OneDrive's version history is the safety net. |
 
 ## 2. Architecture
 
-Four small pieces of our own, with rclone doing the hard work:
+Four small pieces of our own, with rclone doing the hard work. Everything in
+the picture except the CLI, tray and Nemo extension exists **once per
+account** (§13): each account has its own rclone mount and its own daemon.
 
 ```
                     +--------------------------+
- Nemo  ──────────►  | ~/OneDrive (FUSE mount)  |  ◄── any app opens/saves files
+ Nemo  ──────────►  | ~/OneDrive - <name>      |  ◄── any app opens/saves files
                     +------------+-------------+
                                  │
                     +------------▼-------------+       Microsoft
@@ -52,11 +57,12 @@ Four small pieces of our own, with rclone doing the hard work:
 
 | Piece | Job | Tech |
 |---|---|---|
-| **rclone mount** | Shows OneDrive at `~/OneDrive`, downloads on open, uploads on save, polls for remote changes. | rclone ≥ 1.75 from rclone.org. Runs as a `systemd --user` service with `Restart=on-failure`. |
-| **daemon** | Remembers pins, downloads pinned items, frees space, works out each file's state, logs activity. | Python 3 standard library only (sqlite3, socket, json, threading). Separate systemd user service, so a daemon crash **never** unmounts your files. |
+| **rclone mount** | Shows OneDrive at `~/OneDrive - <name>`, downloads on open, uploads on save, polls for remote changes. | rclone ≥ 1.75 from rclone.org. Runs as a `systemd --user` service (`onedrive-ondemand-mount@<account>`) with `Restart=on-failure`. |
+| **daemon** | Remembers pins, downloads pinned items, frees space, works out each file's state, logs activity, reports transfers, serves previews. | Python 3 standard library only (sqlite3, socket, json, threading). Separate systemd user service (`onedrive-ondemand-daemon@<account>`), so a daemon crash **never** unmounts your files. |
 | **CLI** | `onedrive-ondemand pin/unpin/free/status/setup`. Used for testing and scripting. | Python, talks to the daemon. |
 | **Nemo extension** | Emblems and the "OneDrive" right-click submenu. | `nemo-python`. Asks the daemon, with a short timeout so Nemo never freezes. |
-| **Tray icon** | Status, pause/resume, recent activity, settings. | GTK 3 + `XApp.StatusIcon` (Cinnamon's native tray API). |
+| **Tray icon** | Status of all accounts, transfer progress, pause/resume, recent activity, settings, accounts, updates. | GTK 3 + `XApp.StatusIcon` (Cinnamon's native tray API). |
+| **Thumbnailer** | Previews of OneDrive photos without downloading them (§8). | Run by Nemo; asks the daemon. |
 
 Why two services instead of one program: if our Python code crashes, open
 files in your editor must keep working. rclone is mature, and our code is new.
@@ -124,21 +130,27 @@ check in milestone b.
 
 | What | Location | Notes |
 |---|---|---|
-| Downloaded and pinned file contents | `~/.local/share/onedrive-ondemand/cache/vfs/<remote>/<path>` | rclone's `--cache-dir`, deliberately **not** `~/.cache`. Cleaning tools (BleachBit, "clear cache") treat `~/.cache` as disposable. These are normal files at their real paths, stored *sparse* (only downloaded byte ranges use disk). |
-| rclone's per-file bookkeeping | `…/cache/vfsMeta/<remote>/<path>` | Small JSON per file: which bytes are cached, whether an upload is pending. |
-| Pin rules, activity log | `~/.local/share/onedrive-ondemand/state.db` | SQLite. Losing it loses pin choices, not files. |
-| Settings | `~/.config/onedrive-ondemand/config.json` | Eviction timer, free-space limit, mount path. |
-| Sign-in token | `~/.config/onedrive-ondemand/rclone.conf` (mode 600) | Our **own** rclone config, separate from any `~/.config/rclone/rclone.conf` you already have. Never committed to git. |
-| Logs | `journalctl --user -u onedrive-ondemand-mount -u onedrive-ondemand-daemon` | |
+| Downloaded and pinned file contents | `~/.local/share/onedrive-ondemand/accounts/<account>/cache/vfs/<remote>/<path>` | rclone's `--cache-dir`, deliberately **not** `~/.cache`. Cleaning tools (BleachBit, "clear cache") treat `~/.cache` as disposable. These are normal files at their real paths, stored *sparse* (only downloaded byte ranges use disk). |
+| rclone's per-file bookkeeping | `…/<account>/cache/vfsMeta/<remote>/<path>` | Small JSON per file: which bytes are cached, whether an upload is pending. |
+| Pin rules, activity log | `~/.local/share/onedrive-ondemand/accounts/<account>/state.db` | SQLite. Losing it loses pin choices, not files. |
+| Settings | `~/.config/onedrive-ondemand/accounts/<account>/config.json` | Name, mount path, eviction timer, free-space limit, previews. |
+| Sign-in token | `~/.config/onedrive-ondemand/accounts/<account>/rclone.conf` (mode 600) | Our **own** rclone config per account, separate from any `~/.config/rclone/rclone.conf` you already have. Never committed to git. |
+| Picture previews | `~/.cache/thumbnails/` (the standard place) | Deleted again after you leave the folder (§8). |
+| Logs | `journalctl --user -u 'onedrive-ondemand-*'` | |
+
+Version 0.1 kept everything directly in `~/.config/onedrive-ondemand` and
+`~/.local/share/onedrive-ondemand`, with the files in `~/OneDrive`. `setup`
+moves that (by renaming, so nothing is copied or lost) into the `personal`
+account, shown in `~/OneDrive - Personal`.
 
 **What happens when things aren't running:**
 
-- **Mount stopped (logged out, crashed, quit):** `~/OneDrive` is an empty
-  folder. All downloaded/pinned data is still in the cache folder above.
+- **Mount stopped (logged out, crashed, quit):** the account's folder is
+  empty. All downloaded/pinned data is still in the cache folder above.
   Edits that weren't uploaded yet are uploaded automatically the next time
   the mount starts. To stop programs accidentally saving into the empty
   folder (those files would be hidden once the mount comes back), the bare
-  `~/OneDrive` folder is read-only while not mounted. fusermount can't mount
+  folder is read-only while not mounted. fusermount can't mount
   onto a read-only folder, so the service makes it writable just before
   mounting and read-only again after rclone stops. rclone also refuses to
   mount over a non-empty folder.
@@ -147,9 +159,28 @@ check in milestone b.
   first).
 - **Daemon stopped:** files keep working normally. Pins aren't topped up,
   nothing is freed, and Nemo emblems disappear until it's back.
-- **Offline:** cached and pinned files open and save normally, and saves
-  queue for upload. Opening an online-only file fails with an I/O error.
-  Folder listings come from rclone's directory cache.
+- **Offline (the network drops while running):** cached and pinned files
+  open and save normally, and saves queue for upload. Opening an
+  online-only file fails with an I/O error, after about half a minute to a
+  minute (`--low-level-retries 3`; with rclone's default of 10 the opening
+  program hung for over 3 minutes, RESEARCH.md §10). The daemon logs why, and
+  the tray shows a notification. Folder listings come from rclone's
+  directory cache, which **only lives in memory** and only holds folders
+  that were opened since the mount started. So the daemon reads every
+  folder listing (`vfs/refresh recursive=true`) after the mount starts and
+  every 15 minutes, so that all folders can still be opened offline.
+- **Offline when the mount starts** (a laptop booting without Wi-Fi): the
+  normal mount couldn't show anything at all, not even downloaded files,
+  because it has no folder listings yet (tested, RESEARCH.md §10). So the
+  mount service waits up to 30 s for the network, then instead mounts the
+  **cache folder itself, read-only**, filtered to fully downloaded files
+  (`--files-from`). Partly downloaded files are hidden: they are mostly
+  empty space on disk. It's read-only because anything saved there wouldn't
+  be uploaded. Changes that were waiting to upload are shown in their new
+  version (the cache holds it) and upload once the normal mount is back.
+  When the daemon sees the network is back, it restarts the mount service
+  as soon as no program has a file from it open (restarting closes them).
+  Pin, free and eviction wait until then.
 - **Do not edit files inside the cache folder directly.** rclone owns it.
 
 ## 5. Eviction ("freeing space")
@@ -185,10 +216,19 @@ files. It refuses, with a clear message, for files that are open or still
 uploading.
 
 **Pinning** works the other way: the daemon reads each pinned file
-end-to-end through `~/OneDrive` (two at a time), which makes rclone download
+end-to-end through the mount (two at a time), which makes rclone download
 it fully. Pinned folders are re-scanned every 15 minutes (and after remote
 changes) to catch new files. Before pinning a folder, the CLI/menu shows its
 size and warns if it won't fit.
+
+**Progress** (tray, left-click): every 2 s the daemon reads rclone's
+`core/stats`. Its `transferring` list has every file being downloaded
+(opening a file, pins, all go through rclone's VFS downloader, which
+registers each one) and uploaded, with size, bytes done, speed and time
+left. A name in the upload queue marked `uploading` is an upload;
+everything else is a download. The tray shows them with progress bars,
+like the OneDrive flyout on Windows, and its arrows spin while anything is
+transferring. Finished downloads go into Recent activity.
 
 **Pause** (tray, `onedrive-ondemand pause`) uses rclone's
 `vfs/queue-set-expiry`: while paused, the daemon pushes every waiting upload
@@ -199,7 +239,8 @@ already started finishes. Pin downloads also wait. Opening files still works.
 
 | Setting | Default |
 |---|---|
-| Mount path | `~/OneDrive` |
+| Account name | `Personal` for a personal account, `Work` otherwise |
+| Mount path | `~/OneDrive - <name>` |
 | OneDrive folder to show | whole drive (`""`), **or `LinuxClientTest` during development** |
 | Free unused files after | 30 days (0 = never) |
 | Keep at least this much disk free | 10 % |
@@ -237,17 +278,17 @@ effort", not "guaranteed".
 
 | Situation | What happens / what we do |
 |---|---|
-| Nemo thumbnails | To show a small preview picture instead of a generic icon, Nemo reads the whole image/video, which **downloads it**. Checked in milestone (c): GIO reports the rclone mount as **local** (`filesystem::remote: FALSE`), so "Local files only" does *not* protect it. Setup asks once; if you say no, it sets Nemo's per-folder "Show Thumbnails" switch off for `~/OneDrive` (`metadata::show-thumbnails=false`) and turns on `inherit-show-thumbnails` so sub-folders follow. Other folders are unaffected. |
-| Network drop | rclone retries with back-off. Tray shows "Offline". Uploads resume automatically. |
+| Nemo thumbnails | To show a preview, Nemo would read the whole picture/video/PDF, which **downloads it**: GIO reports the rclone mount as **local**, so "Local files only" doesn't protect it. **Version 0.2:** our own thumbnailer (`thumbnailer.py`), installed in `~/.local/share/thumbnailers/`, which Cinnamon prefers over the system's (checked, RESEARCH.md §11). For a OneDrive file that isn't fully downloaded, the daemon fetches OneDrive's own **medium** preview (at most 176 px) from Graph (`/drives/{id}/root:/{path}:/thumbnails/0/medium`) and the file itself is never read. A fully downloaded file goes to the normal thumbnailer (it reads from disk). Files outside OneDrive go straight to the normal thumbnailer. **It must always write a picture for OneDrive files:** if a thumbnailer fails, Cinnamon reads the file itself (checked). So offline or on any error it writes a plain grey square. Nemo saves previews in `~/.cache/thumbnails`; the Nemo extension tells the daemon which folders are on screen (`LocationWidgetProvider`), and the daemon deletes each preview 2 minutes after its folder was last shown (and all of them when it starts, or when previews are turned off). Turning previews **off** still uses the per-folder switch (`metadata::show-thumbnails=false`). |
+| Network drop | rclone retries with back-off. The daemon notices within 15 s (a quick connection test to Microsoft) and the tray shows "Offline". Uploads resume automatically. See §4. |
 | Sign-in expires (90 days unused, or password change) | Mount fails to talk to OneDrive. Tray shows "Sign in again", which re-runs the browser sign-in. |
 | Throttling (HTTP 429) | rclone backs off automatically. Your own client ID reduces this (optional, later). |
 | Disk full | Space rule frees unpinned files. If only pinned files remain, the tray warns you. |
-| Deleting in `~/OneDrive` | **Deletes from OneDrive** (to the OneDrive recycle bin, kept 30 days), same as Windows. We never use permanent delete. |
+| Deleting in a OneDrive folder | **Deletes from OneDrive** (to the OneDrive recycle bin, kept 30 days), same as Windows. We never use permanent delete. |
 | Invalid names (`:` `?` etc.), `a.txt` vs `A.txt` | rclone substitutes look-alike characters. Two names differing only by case can't both exist on OneDrive. |
 | Huge folders (>50k items) | OneDrive limit. Listing may be slow or fail. |
 | Two PCs (Linux + Windows dual boot) editing the same file | Treated as a remote change (§7). Keep the Linux cache on the Linux partition, not on a shared NTFS one. |
 | Symlinks | Not supported by OneDrive. rclone can't store them. |
-| OneDrive Business | rclone supports it (`drive_type business`). Setup will ask which kind. The design is account-agnostic, with one account in v1. |
+| OneDrive Business | rclone supports it (`drive_type business`); setup finds out the kind from Graph when you sign in. Several accounts at once since 0.2 (§13). Not yet tested with a real Business account. Some organisations require an admin to approve rclone's app before anyone can sign in. |
 
 ## 9. Development safety rules
 
@@ -271,7 +312,7 @@ onedrive_ondemand/
   config.py     paths and settings
   rclone.py     builds the rclone command line; sign-in; our rclone.conf; rc client
   graph.py      a few direct Microsoft Graph calls (drive, folder, item lookup)
-  mount.py      prepares ~/OneDrive, starts rclone; cleans up after it stops
+  mount.py      prepares the folder, starts rclone (or the offline mount); cleans up after it stops
   setup_wizard.py  `setup`: sign-in, folder, service, upload-location check
   cache.py      reads sidecars, works out file state, frees one file
   pins.py       SQLite pin rules and "effective state" lookup
@@ -280,17 +321,25 @@ onedrive_ondemand/
   ipc.py        JSON messages over a unix socket (daemon <-> CLI/tray/Nemo)
   cli.py        command-line interface
   status.py     one-line status summary shared by CLI and tray
-  tray.py       tray icon
+  tray.py       tray icon, progress window, settings and accounts dialog
+  previews.py   which previews we made; deleting them again (§8)
+  thumbnailer.py  the thumbnailer Nemo runs (§8)
+  updates.py    checking for and installing updates (§14)
 nemo/onedrive_ondemand_nemo.py   Nemo extension (batched, 1 s timeout: Nemo never waits long)
 bin/            onedrive-ondemand launcher for running from the source folder
-data/           icons, systemd units, autostart and menu .desktop files
+data/           icons, systemd unit templates (one copy per account), autostart and menu .desktop files
 packaging/      build-deb.sh (dpkg-deb, no root needed)
-tests/          unit tests (fake cache folder, no network)
+tests/          unit tests (fake cache folder, fake home folder, no network)
+.github/workflows/release.yml   builds the .deb and publishes a release for a v* tag
 ```
 
 Requirements: Linux Mint 21+/22 (Python 3.10+), `python3-gi`,
-`gir1.2-xapp-1.0`, `nemo-python`, `fuse3`, and rclone ≥ 1.75 installed from
-rclone.org. No pip packages.
+`gir1.2-xapp-1.0`, `gir1.2-gdkpixbuf-2.0`, `nemo-python`, `fuse3`, `curl`,
+`pkexec`, and rclone ≥ 1.75 installed from rclone.org. No pip packages.
+The `.deb` doesn't depend on an `rclone` package: rclone.org's own install
+script doesn't register with dpkg, so `rclone (>= 1.75)` as a dependency
+would make apt try (and fail) to use Mint's old one. Setup checks the
+version instead and offers to run rclone.org's installer.
 
 **Packaging:** a `.deb` built by a simple script. **No Flatpak:** a Flatpak
 sandbox can't create a system FUSE mount or install a Nemo extension, so it
@@ -323,3 +372,60 @@ would add work without working properly.
    - Make `~/OneDrive` writable just before mounting and read-only again
      after unmounting, because fusermount can't mount onto a read-only
      folder (§4).
+6. **Version 0.2 (2026-10-30, asked for by the maintainer):** several
+   accounts with one folder each, named like Windows (§13); transfer
+   progress in the tray (§5); offline fixes (§4); previews from OneDrive's
+   servers instead of downloading (§8); a guided `.deb` install and
+   updates from GitHub (§14). Safety rule 1 still applies to every account:
+   each one only shows its `LinuxClientTest` folder.
+
+## 13. Several accounts (version 0.2)
+
+Each account is a short id (`personal`, `work`) with its own:
+
+- folder, `~/OneDrive - <name>` (like Windows' "OneDrive - Personal" and
+  "OneDrive - Contoso"), also added to Nemo's sidebar,
+- rclone config with its own sign-in, cache folder, pin database and
+  sockets (`config.Account` has every path),
+- pair of services from systemd **templates**:
+  `onedrive-ondemand-mount@<id>.service` and
+  `onedrive-ondemand-daemon@<id>.service` (`%i` is the id).
+
+Running one daemon per account (instead of one daemon for all) keeps the
+daemon code almost unchanged and keeps accounts independent: a problem with
+one can't stop the other. The tray, Nemo extension and CLI find the right
+daemon from the folder a file is in (`config.account_for_path`).
+
+- **Add** (`add-account`, or Settings → Add an account): browser sign-in,
+  Graph `/me/drive` tells personal from business, refuses an account that's
+  already added (same drive ID), asks for a name, then does the same checks
+  as setup (folder exists, uploads land in `LinuxClientTest`).
+- **Sign out** (`remove-account`, or Settings → Sign out): like Windows'
+  "Unlink this PC". Refuses (unless you confirm) while changes are waiting
+  to upload. Stops and disables the services, then deletes that account's
+  sign-in, settings, pins and downloaded copies. Nothing on OneDrive changes.
+- Eviction and preview settings are the same for every account (the tray
+  changes them for all).
+- Adding a second account in the browser: Microsoft may sign you straight in
+  to the first one. Setup says to pick "Use another account" or open the
+  link in a private window.
+
+## 14. Installing and updating (version 0.2)
+
+- **First run after installing the `.deb`:** the tray starts at the next
+  login (or from the menu → OneDrive). With no account set up it shows a
+  notification and a "Set up OneDrive…" item; clicking it opens setup in a
+  terminal window. Setup checks rclone (offering rclone.org's installer if
+  it's missing or older than 1.75), then guides through sign-in, the
+  account's name and previews. Version 0.1 users run `setup` once to move to
+  the new layout (§4).
+- **Updates:** the tray checks once a day, and on request ("Check for
+  updates…"). Installed from the `.deb`: compares this version with the
+  newest GitHub release, downloads its `.deb` and installs it with
+  `pkexec apt-get install` (a password window). Running from a `git clone`:
+  `git fetch` + `git pull --ff-only` (refused if the folder has its own
+  changes). Either way it then restarts every account's services and the
+  tray. Restarting the mount closes files open from OneDrive, so the tray
+  says to close them first; changes waiting to upload are kept in the cache.
+- **Releases:** pushing a `v*` tag makes GitHub Actions run the tests, build
+  the `.deb` and publish a release (`.github/workflows/release.yml`).

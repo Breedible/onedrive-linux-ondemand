@@ -34,15 +34,29 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
   `onedrive-ondemand uninstall`. README covers install/uninstall/limitations.
 - **Milestone (f) done 2026-10-30:** conflict guard (`conflicts.py`).
   Results in `docs/RESEARCH.md` §9.
-- **All milestones a–f are built.** Not yet tested: offline behaviour
-  (network cable out), a reboot, installing the `.deb`, OneDrive Business.
-  The client only shows `LinuxClientTest`; showing the whole drive is the
+- **All milestones a–f are built.**
+- **Version 0.2 built 2026-10-30** (asked for by the maintainer after
+  testing; DESIGN.md §12 item 6, §13, §14):
+  - several accounts, one folder each (`~/OneDrive - Personal`, `~/OneDrive - Work`),
+    with services from systemd templates (`onedrive-ondemand-mount@<id>`);
+    `setup` moves a 0.1 setup into the `personal` account,
+  - transfer progress in the tray (left-click), spinning icon while syncing,
+  - offline fixes (RESEARCH.md §10), including a read-only offline mount
+    when OneDrive can't be reached at start,
+  - previews from OneDrive's servers instead of downloading (RESEARCH.md §11),
+  - a guided `.deb` (setup installs rclone if needed), Check for updates,
+    and a release workflow (`.github/workflows/release.yml`).
+  Tested in a container (Ubuntu 24.04, rclone 1.60, Cinnamon's thumbnail
+  library, Xvfb for the tray). **Not yet tested on the maintainer's PC with
+  real OneDrive:** all of 0.2, plus a reboot and OneDrive Business.
+- Each account only shows `LinuxClientTest`; showing the whole drive is the
   next step after the maintainer's own testing (safety rule 1).
 - Live tests go in `LinuxClientTest/_dev-tests/`. Other folders in there are the
   maintainer's own test files: only ever read them, never change them.
 - Milestones run in order a → f. After each one: explain in plain language
   how to test it and what is still missing, then commit.
 - Run tests with: `python3 -m unittest discover -s tests -t .`
+  (the Nemo extension tests need `gir1.2-nemo-3.0`, otherwise they're skipped)
 - Run from the source folder with: `./bin/onedrive-ondemand <command>`
 - Build the package with: `./packaging/build-deb.sh`
 

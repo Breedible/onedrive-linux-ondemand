@@ -102,7 +102,7 @@ class ConflictGuard:
 
     def remote_version(self, rel):
         """OneDrive's current (size, quickxor hash) of a file, or None if it isn't there."""
-        answer = rclone.rc("operations/stat", {"fs": self.daemon.fs, "remote": rel,
+        answer = self.daemon.rc("operations/stat", {"fs": self.daemon.fs, "remote": rel,
                                                "opt": {"showHash": True}})
         item = answer.get("item")
         if not item or item.get("IsDir"):
@@ -164,10 +164,10 @@ class ConflictGuard:
     def keep_other_version(self, rel):
         """Copy OneDrive's version to a "conflict copy" name, on OneDrive itself."""
         def exists(name):
-            return rclone.rc("operations/stat", {"fs": self.daemon.fs, "remote": name}).get("item") is not None
+            return self.daemon.rc("operations/stat", {"fs": self.daemon.fs, "remote": name}).get("item") is not None
 
         name = conflict_name(rel, datetime.now(), exists)
-        rclone.rc("operations/copyfile", {"srcFs": self.daemon.fs, "srcRemote": rel,
+        self.daemon.rc("operations/copyfile", {"srcFs": self.daemon.fs, "srcRemote": rel,
                                            "dstFs": self.daemon.fs, "dstRemote": name}, timeout=300)
         self.daemon.store.log("conflict", rel,
                               f"{rel} was changed here and somewhere else. Both are kept: "

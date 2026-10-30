@@ -1,0 +1,38 @@
+# Builds the .deb and publishes it as a GitHub release when a version tag is pushed.
+# The tray's "Check for updates" looks for these releases (onedrive_ondemand/updates.py).
+#
+# To make a release (see README.md, "Making a release"):
+#   1. Set __version__ in onedrive_ondemand/__init__.py, e.g. "0.2.1", and commit.
+#   2. git tag v0.2.1 && git push origin v0.2.1
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # needed to create the release
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the version in the code
+        run: |
+          version=$(python3 -c "import onedrive_ondemand; print(onedrive_ondemand.__version__)")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match __version__ $version"; exit 1
+          fi
+
+      - name: Run the tests
+        run: python3 -m unittest discover -s tests -t .
+
+      - name: Build the .deb
+        run: ./packaging/build-deb.sh
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/*.deb --title "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,28 @@
+# Shows one OneDrive account in its folder (e.g. ~/OneDrive - Personal) using rclone.
+# A "template": one copy runs per account, e.g. onedrive-ondemand-mount@personal.service,
+# and %i is the account id. Installed by `onedrive-ondemand setup` (from a source
+# folder, setup fills in the @...@ placeholders) or by the .deb package.
+[Unit]
+Description=OneDrive On-Demand: mount for account %i (rclone)
+Documentation=https://github.com/Breedible/onedrive-linux-ondemand
+
+[Service]
+# rclone tells systemd when the mount is ready to use.
+Type=notify
+# Where Python finds our code.
+Environment=PYTHONPATH=@SOURCE_DIR@
+# Prepares the folder, then becomes `rclone mount` (onedrive_ondemand/mount.py).
+# If OneDrive can't be reached, it waits up to 30 s for the network, then
+# shows the downloaded files read-only until you're back online.
+ExecStart=@PYTHON@ -m onedrive_ondemand mount %i
+# Runs whenever rclone stops, even after a crash: clears a dead mount and
+# makes the empty folder read-only again.
+ExecStopPost=@PYTHON@ -m onedrive_ondemand mount-stopped %i
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=120
+# Give rclone time to unmount cleanly. Unfinished uploads resume next start.
+TimeoutStopSec=60
+
+[Install]
+WantedBy=default.target

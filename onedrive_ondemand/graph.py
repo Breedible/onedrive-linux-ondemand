@@ -2,10 +2,12 @@
 
 rclone covers almost everything, but setup needs to look up your drive's ID
 and the ID of the test folder. Milestone b also uses this module to find
-pinned items after a rename (DESIGN.md §3).
+pinned items after a rename (DESIGN.md §3), and to fetch the small preview
+pictures OneDrive makes of photos (DESIGN.md §8).
 """
 
 import json
+import socket
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -126,3 +128,46 @@ def path_in_folder(item, remote_folder):
     if full.startswith(remote_folder + "/"):
         return full[len(remote_folder) + 1:]
     return None
+
+
+def reachable(timeout=5):
+    """True if this computer can open a connection to Microsoft's servers.
+
+    A quick check (a few seconds at most) used to tell "offline" from "online".
+    It only opens and closes a connection; nothing is sent.
+    """
+    for host in ("graph.microsoft.com", "login.microsoftonline.com"):
+        try:
+            socket.create_connection((host, 443), timeout=timeout).close()
+            return True
+        except OSError:
+            continue
+    return False
+
+
+def thumbnail(access_token, drive_id, path, size="medium"):
+    """OneDrive's own small preview picture of a file, as JPEG bytes, or None.
+
+    `path` is the file's full path in the drive, e.g. "LinuxClientTest/a.jpg".
+    OneDrive makes these previews on its servers, so the file itself is never
+    downloaded. "medium" fits in 176x176 pixels (DESIGN.md §8).
+    Returns None if OneDrive has no preview for this kind of file.
+    """
+    quoted = urllib.parse.quote(path.strip("/"))
+    try:
+        info = _request(access_token, "GET",
+                        f"/drives/{urllib.parse.quote(drive_id)}/root:/{quoted}:/thumbnails/0/{size}")
+    except GraphError as error:
+        if error.status in (400, 404):
+            return None
+        raise
+    url = info.get("url")
+    if not url:
+        return None
+    # The address is a ready-signed link: it must NOT get our sign-in token,
+    # because it points at a different server.
+    try:
+        with urllib.request.urlopen(url, timeout=30) as response:
+            return response.read(5 * 1024 * 1024)  # previews are small; 5 MB is a hard cap
+    except urllib.error.URLError as error:
+        raise GraphError(0, f"couldn't fetch the preview ({error})") from None

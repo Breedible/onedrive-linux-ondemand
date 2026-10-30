@@ -25,7 +25,8 @@ class VersionTest(unittest.TestCase):
 
 class MountCommandTest(unittest.TestCase):
     def setUp(self):
-        self.cmd = rclone.mount_command(dict(config.DEFAULT_SETTINGS))
+        self.account = config.Account("personal")
+        self.cmd = rclone.mount_command(self.account, dict(config.DEFAULT_SETTINGS))
 
     def value_of(self, flag):
         return self.cmd[self.cmd.index(flag) + 1]
@@ -36,22 +37,46 @@ class MountCommandTest(unittest.TestCase):
     def test_whole_drive_is_refused(self):
         settings = dict(config.DEFAULT_SETTINGS, remote_folder="")
         with self.assertRaises(ValueError):
-            rclone.mount_command(settings)
+            rclone.mount_command(self.account, settings)
 
     def test_uses_our_config(self):
-        self.assertEqual(self.value_of("--config"), str(config.RCLONE_CONF))
+        self.assertEqual(self.value_of("--config"), str(self.account.rclone_conf))
 
     def test_cache_settings_match_design(self):
         self.assertEqual(self.value_of("--vfs-cache-mode"), "full")
         self.assertEqual(self.value_of("--vfs-cache-max-age"), "87600h")
         self.assertEqual(self.value_of("--vfs-cache-min-free-space"), "1G")
         self.assertNotIn("--vfs-cache-max-size", self.cmd)
-        self.assertEqual(self.value_of("--cache-dir"), str(config.CACHE_DIR))
+        self.assertEqual(self.value_of("--cache-dir"), str(self.account.cache_dir))
+
+    def test_fails_fast_when_offline(self):
+        self.assertEqual(self.value_of("--low-level-retries"), "3")
 
     def test_rc_is_on_a_unix_socket(self):
-        self.assertEqual(self.value_of("--rc-addr"), f"unix://{config.RC_SOCKET}")
+        self.assertEqual(self.value_of("--rc-addr"), f"unix://{self.account.rc_socket}")
+
+    def test_shown_with_the_account_name(self):
+        self.assertEqual(self.value_of("--volname"), "OneDrive - Personal")
 
     def test_never_uses_dangerous_commands(self):
+        for word in rclone.FORBIDDEN:
+            self.assertNotIn(word, self.cmd)
+
+
+class OfflineMountCommandTest(unittest.TestCase):
+    def setUp(self):
+        self.account = config.Account("work")
+        settings = dict(config.DEFAULT_SETTINGS, name="Work")
+        self.cmd = rclone.offline_mount_command(self.account, settings, "/run/list.txt")
+
+    def test_shows_the_cache_read_only(self):
+        expected = self.account.cache_dir / "vfs" / "onedrive-ondemand" / "LinuxClientTest"
+        self.assertEqual(self.cmd[1:3], ["mount", str(expected)])
+        self.assertIn("--read-only", self.cmd)
+        self.assertEqual(self.cmd[self.cmd.index("--files-from") + 1], "/run/list.txt")
+
+    def test_never_talks_to_onedrive(self):
+        self.assertNotIn("onedrive-ondemand:", " ".join(self.cmd))
         for word in rclone.FORBIDDEN:
             self.assertNotIn(word, self.cmd)
 

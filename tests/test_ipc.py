@@ -17,8 +17,8 @@ class IpcTest(unittest.TestCase):
 
             server = ipc.serve(handle, sock)
             try:
-                self.assertEqual(ipc.request("echo", sock, value="héllo")["echo"], "héllo")
-                answer = ipc.request("boom", sock)
+                self.assertEqual(ipc.request(sock, "echo", value="héllo")["echo"], "héllo")
+                answer = ipc.request(sock, "boom")
                 self.assertFalse(answer["ok"])
                 self.assertIn("broken", answer["error"])
             finally:
@@ -27,7 +27,7 @@ class IpcTest(unittest.TestCase):
 
     def test_not_running(self):
         with self.assertRaises(ipc.DaemonNotRunning):
-            ipc.request("info", Path("/tmp/does-not-exist.sock"))
+            ipc.request(Path("/tmp/does-not-exist.sock"), "info")
 
 
 if __name__ == "__main__":

@@ -1,22 +1,29 @@
 """The background daemon: pins, freeing space, file states, activity log.
 
-It runs as its own systemd user service, separate from the rclone mount, so a
-crash here never takes your files away (DESIGN.md §2). It talks to:
-- rclone, over the rc socket (upload queue, item IDs),
+One daemon runs per account, as its own systemd user service
+(onedrive-ondemand-daemon@<account>), separate from that account's rclone
+mount, so a crash here never takes your files away (DESIGN.md §2). It talks to:
+- rclone, over the rc socket (upload queue, transfers, item IDs),
 - rclone's cache folder on disk (what's downloaded),
-- Microsoft Graph (finding pinned items after a rename),
-- the CLI, Nemo and the tray, over its own socket (ipc.py).
+- Microsoft Graph (finding pinned items after a rename, picture previews),
+- the CLI, Nemo, the tray and the thumbnailer, over its own socket (ipc.py).
 
 Threads:
-- "uploads":  every 2 s, reads rclone's upload queue (activity log, pause).
+- "uploads":  every 2 s, reads rclone's upload queue and transfers (progress,
+              activity log, pause).
 - "pins-N":   two workers that download pinned files by reading them.
-- "upkeep":   every 5 min: follow renames, re-scan pinned folders, free space.
+- "online":   every 15 s, checks whether OneDrive can be reached.
+- "upkeep":   every 5 min: follow renames, re-scan pinned folders, free space,
+              keep folder listings fresh for offline use.
+- "previews": every 30 s, deletes picture previews you've finished looking at.
 """
 
+import base64
 import os
 import queue
 import shutil
 import signal
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -24,11 +31,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from onedrive_ondemand import cache as cachemod
-from onedrive_ondemand import config, graph, ipc, pins, rclone
+from onedrive_ondemand import config, graph, ipc, pins, previews, rclone
 from onedrive_ondemand.conflicts import ConflictGuard
 
 QUEUE_POLL_SECONDS = 2
+ONLINE_CHECK_SECONDS = 15
 UPKEEP_SECONDS = 5 * 60
+PREVIEW_CLEANUP_SECONDS = 30
+# Re-read every folder listing this often, so folders you haven't opened
+# recently still show while offline (rclone keeps listings in memory only).
+WARM_LISTINGS_SECONDS = 15 * 60
 PIN_WORKERS = 2               # files downloaded at the same time for pins
 ERROR_TRIES = 3               # an upload that failed this often counts as an error
 HOLD_SECONDS = 365 * 24 * 3600  # "don't upload yet" while paused
@@ -95,6 +107,29 @@ def file_state(rel, is_dir, rule, sidecar, queue_item, pin_pending, pin_error):
     return "local" if full else "online"
 
 
+def transfers_from_stats(stats, queue):
+    """rclone's "transferring" list -> what the tray shows (DESIGN.md §5).
+
+    rclone lists downloads (opening a file, pins) and uploads together. A
+    file that's in the upload queue and marked "uploading" is an upload;
+    everything else is a download.
+    """
+    result = []
+    for t in stats.get("transferring") or []:
+        name = t.get("name", "")
+        item = queue.get(name)
+        result.append({
+            "name": name,
+            "direction": "upload" if item and item.get("uploading") else "download",
+            "size": t.get("size") or 0,
+            "bytes": t.get("bytes") or 0,
+            "percentage": t.get("percentage") or 0,
+            "speed": t.get("speedAvg") or t.get("speed") or 0,
+            "eta": t.get("eta"),
+        })
+    return result
+
+
 class UserError(Exception):
     """Something the user asked for can't be done; the message explains why."""
 
@@ -102,14 +137,15 @@ class UserError(Exception):
 # --- The daemon ---------------------------------------------------------------
 
 class Daemon:
-    def __init__(self):
-        self.settings = config.load_settings()
+    def __init__(self, account):
+        self.account = account
+        self.settings = account.settings()
         self.mount = config.mount_path(self.settings)
         self.fs = rclone.remote_fs(self.settings)
-        self.cache = cachemod.Cache(config.CACHE_DIR, config.REMOTE_NAME,
+        self.cache = cachemod.Cache(account.cache_dir, config.REMOTE_NAME,
                                     self.settings["remote_folder"], self.mount)
-        config.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.store = pins.Store(config.DATA_DIR / "state.db")
+        account.data_dir.mkdir(parents=True, exist_ok=True)
+        self.store = pins.Store(account.state_db)
 
         self.lock = threading.Lock()
         self.upkeep_lock = threading.Lock()   # only one upkeep pass at a time
@@ -125,6 +161,12 @@ class Daemon:
         self.pin_errors = {}           # path -> error message
         self.last_upkeep = None
         self.cache_bytes = 0
+        self.transfers = []            # files downloading/uploading right now
+        self.offline_told = set()      # files we already said can't download offline
+        self.last_online_check = 0.0   # time.monotonic() of the last full check
+        self.last_warm = 0.0           # ... and of the last listing refresh
+        self.previews = previews.Tracker()
+        self.waiting_to_reconnect = False
         # Functions called with (queue, finished uploads) on every queue poll.
         self.upload_hooks = [ConflictGuard(self)]
 
@@ -143,9 +185,22 @@ class Daemon:
     def abs_path(self, rel):
         return self.mount / rel if rel else self.mount
 
+    def rc(self, command, params=None, timeout=30):
+        """Send a command to this account's rclone mount."""
+        return rclone.rc(self.account.rc_socket, command, params, timeout)
+
+    def offline_mode(self):
+        """True while the read-only offline mount is running (mount.py)."""
+        return self.account.mode() == "offline"
+
+    def check_not_offline_mode(self):
+        if self.offline_mode():
+            raise UserError("You're offline, so only downloaded files are shown for now. "
+                            "Try again once you're back online.")
+
     def item_id(self, rel):
         """OneDrive's permanent ID for an item, asked from rclone."""
-        item = rclone.rc("operations/stat", {"fs": self.fs, "remote": rel}).get("item")
+        item = self.rc("operations/stat", {"fs": self.fs, "remote": rel}).get("item")
         if not item or not item.get("ID"):
             raise UserError(f"Couldn't find {rel} on OneDrive (is it uploaded yet?).")
         return rclone.item_id_from_rclone(item["ID"])
@@ -157,14 +212,14 @@ class Daemon:
         a cheap rc call (`operations/about`, which only reads the quota) makes
         rclone renew and save it.
         """
-        token = rclone.read_token() or {}
+        token = rclone.read_token(self.account.rclone_conf) or {}
         expiry = cachemod.parse_time(token.get("expiry"))
         if expiry is None or expiry < datetime.now(timezone.utc) + timedelta(minutes=2):
             try:
-                rclone.rc("operations/about", {"fs": self.fs}, timeout=60)
+                self.rc("operations/about", {"fs": self.fs}, timeout=60)
             except rclone.RcError:
                 pass
-            token = rclone.read_token() or {}
+            token = rclone.read_token(self.account.rclone_conf) or {}
         if "access_token" not in token:
             raise graph.GraphError(0, "not signed in")
         return token["access_token"]
@@ -185,8 +240,14 @@ class Daemon:
             for name in files:
                 yield str((Path(folder) / name).relative_to(self.mount))
 
+    # The settings this daemon changes. Setup and the tray may change others
+    # (like the account's name) in the file while we run, so we only write ours.
+    OWN_SETTINGS = ("paused", "evict_after_days", "min_free_space_percent", "thumbnails")
+
     def save_settings(self):
-        config.save_settings(self.settings)
+        on_disk = self.account.settings()
+        on_disk.update({key: self.settings[key] for key in self.OWN_SETTINGS})
+        self.account.save_settings(on_disk)
 
     # --- state of files ----------------------------------------------------
 
@@ -214,7 +275,8 @@ class Daemon:
             "pin": self.cmd_pin, "unpin": self.cmd_unpin, "free": self.cmd_free,
             "activity": self.cmd_activity, "pause": self.cmd_pause, "resume": self.cmd_resume,
             "settings": self.cmd_settings, "upkeep": self.cmd_upkeep,
-            "weburl": self.cmd_weburl,
+            "weburl": self.cmd_weburl, "preview": self.cmd_preview,
+            "viewing": self.cmd_viewing, "previews_off": self.cmd_previews_off,
         }
         if cmd not in handlers:
             return {"ok": False, "error": f"unknown command {cmd!r}"}
@@ -247,7 +309,11 @@ class Daemon:
             upload_errors = sum(1 for item in self.queue.values()
                                 if item.get("tries", 0) >= ERROR_TRIES)
             info = {
+                "account": self.account.id,
+                "name": config.display_name(self.settings),
                 "mounted": os.path.ismount(self.mount),
+                "offline_mode": self.offline_mode(),
+                "waiting_to_reconnect": self.waiting_to_reconnect,
                 "rclone": self.rclone_ok,
                 "online": self.online,
                 "signin_needed": self.signin_needed,
@@ -257,10 +323,12 @@ class Daemon:
                 "upload_errors": upload_errors,
                 "pinning": len(self.pin_pending),
                 "pin_errors": len(self.pin_errors),
+                "transfers": list(self.transfers),
                 "cache_bytes": self.cache_bytes,
                 "last_upkeep": self.last_upkeep,
             }
-        usage = shutil.disk_usage(config.CACHE_DIR if config.CACHE_DIR.exists() else Path.home())
+        usage = shutil.disk_usage(self.account.cache_dir if self.account.cache_dir.exists()
+                                  else Path.home())
         info.update(disk_free=usage.free, disk_total=usage.total,
                     mount_path=str(self.mount), folder=self.settings["remote_folder"],
                     pinned=[r["path"] for r in self.store.rules() if r["state"] == pins.PINNED],
@@ -268,6 +336,7 @@ class Daemon:
         return info
 
     def cmd_pin(self, message):
+        self.check_not_offline_mode()
         rel = self.to_rel(message["path"])
         if rel == "":
             raise UserError("Pin the folders inside OneDrive instead of the whole thing.")
@@ -281,7 +350,7 @@ class Daemon:
             sidecar = self.cache.sidecar(file_rel)
             size = os.stat(self.abs_path(file_rel)).st_size
             needed += size - (cachemod.cached_bytes(sidecar) if sidecar else 0)
-        usage = shutil.disk_usage(config.CACHE_DIR)
+        usage = shutil.disk_usage(self.account.cache_dir)
         keep_free = usage.total * self.settings["min_free_space_percent"] / 100
         if needed > usage.free - keep_free and not message.get("force"):
             raise UserError(
@@ -310,6 +379,9 @@ class Daemon:
         return {"message": f"{rel} is no longer pinned. Downloaded files stay until space is needed."}
 
     def cmd_free(self, message):
+        # The offline mount shows files straight from the cache: freeing them
+        # now would pull them out from under it.
+        self.check_not_offline_mode()
         rel = self.to_rel(message["path"])
         if rel == "" and not message.get("everything"):
             raise UserError("Choose a file or folder inside OneDrive.")
@@ -376,6 +448,8 @@ class Daemon:
             if not 0 <= percent <= 50:
                 raise UserError("Keep-free space must be between 0 and 50 %.")
             self.settings["min_free_space_percent"] = percent
+        if "thumbnails" in changes:
+            self.settings["thumbnails"] = bool(changes["thumbnails"])
         if changes:
             self.save_settings()
             self.upkeep_now.set()
@@ -389,6 +463,45 @@ class Daemon:
             raise UserError(f"Couldn't find {rel} on OneDrive.")
         return {"url": item["webUrl"]}
 
+    def cmd_preview(self, message):
+        """A picture preview for the thumbnailer, without downloading the file (DESIGN.md §8).
+
+        Answers {"local": true} if the file is already fully on this computer
+        (the normal thumbnailer can read it from disk), {"image": <base64>}
+        with OneDrive's own preview, or {"placeholder": true} if there's none
+        (offline, or OneDrive has no preview for this kind of file).
+        """
+        rel = self.to_rel(message["path"])
+        uri = message.get("uri") or Path(message["path"]).as_uri()
+        sidecar = self.cache.sidecar(rel)
+        if sidecar is not None and cachemod.is_fully_cached(sidecar) and not self.offline_mode():
+            self.previews.record(uri)
+            return {"local": True}
+        if self.online is False or self.offline_mode():
+            self.previews.record(uri, placeholder=True)
+            return {"placeholder": True}
+        drive_id = (rclone.read_rclone_conf(self.account.rclone_conf) or {}).get("drive_id")
+        remote_path = f"{self.settings['remote_folder']}/{rel}".strip("/")
+        try:
+            image = graph.thumbnail(self.access_token(), drive_id, remote_path)
+        except (graph.GraphError, OSError) as error:
+            print(f"No preview for {rel}: {error}", flush=True)
+            image = None
+        self.previews.record(uri, placeholder=image is None)
+        if image is None:
+            return {"placeholder": True}
+        return {"image": base64.b64encode(image).decode()}
+
+    def cmd_viewing(self, message):
+        """Nemo tells us which folders it's showing, so their previews are kept."""
+        self.previews.viewing(message.get("folders", []))
+        return {}
+
+    def cmd_previews_off(self, message):
+        """Previews were turned off: delete every saved preview of our files now."""
+        self.previews.made.clear()
+        return {"deleted": previews.delete_all_under(self.mount)}
+
     def cmd_upkeep(self, message):
         """Run the 5-minute pass right now and wait for the result (for testing)."""
         return {"result": self.upkeep()}
@@ -397,15 +510,23 @@ class Daemon:
 
     def poll_queue(self):
         try:
-            items = rclone.rc("vfs/queue", timeout=10).get("queue", [])
+            # The offline mount has no upload queue (it's read-only).
+            items = [] if self.offline_mode() else self.rc("vfs/queue", timeout=10).get("queue", [])
+            stats = self.rc("core/stats", timeout=10)
             self.rclone_ok = True
         except rclone.RcError:
             self.rclone_ok = False
+            with self.lock:
+                self.transfers = []
             return
         current = {item["name"]: item for item in items}
+        transfers = transfers_from_stats(stats, current)
         with self.lock:
             finished = set(self.queue) - set(current)
             self.queue = current
+            old_downloads = {t["name"] for t in self.transfers if t["direction"] == "download"}
+            self.transfers = transfers
+        self.note_downloads(old_downloads, transfers)
         for rel in finished:
             sidecar = self.cache.sidecar(rel)
             if sidecar is not None and not sidecar.get("Dirty"):
@@ -420,9 +541,26 @@ class Daemon:
         for hook in self.upload_hooks:
             hook(current, finished)
 
+    def note_downloads(self, old_downloads, transfers):
+        """Log finished downloads, and say so when a file can't download because we're offline."""
+        now_downloading = {t["name"] for t in transfers if t["direction"] == "download"}
+        for rel in old_downloads - now_downloading:
+            sidecar = self.cache.sidecar(rel)
+            if sidecar is not None and cachemod.is_fully_cached(sidecar) and sidecar.get("Size"):
+                self.store.log("downloaded", rel, f"Downloaded {rel}")
+        if self.online is False:
+            for rel in now_downloading - self.offline_told:
+                self.offline_told.add(rel)
+                self.store.log("offline", rel,
+                               f"You're offline, so {rel} can't be downloaded. Programs opening it "
+                               "will wait for a while and then give an error. Downloaded files "
+                               "still open normally.")
+        else:
+            self.offline_told.clear()
+
     def set_expiry(self, item, seconds):
         try:
-            rclone.rc("vfs/queue-set-expiry", {"id": item["id"], "expiry": seconds})
+            self.rc("vfs/queue-set-expiry", {"id": item["id"], "expiry": seconds})
         except rclone.RcError:
             pass  # it may have just finished uploading
 
@@ -496,7 +634,7 @@ class Daemon:
         Returns True only if every rule could be checked.
         """
         self.store.forget_old_deleted()
-        if not self.rclone_ok:
+        if not self.rclone_ok or self.offline_mode():
             return False
         all_checked = True
         token = None
@@ -539,9 +677,19 @@ class Daemon:
 
     def check_online(self):
         """Can rclone reach OneDrive, and is the sign-in still accepted?"""
+        self.last_online_check = time.monotonic()
+        if not graph.reachable():
+            # A quick connection test first: asking rclone while offline can
+            # take a minute to fail.
+            self.set_online(False)
+            return
+        if self.offline_mode():
+            self.set_online(True)
+            return
         try:
-            rclone.rc("operations/about", {"fs": self.fs}, timeout=60)
-            self.online, self.signin_needed = True, False
+            self.rc("operations/about", {"fs": self.fs}, timeout=60)
+            self.signin_needed = False
+            self.set_online(True)
         except rclone.RcError as error:
             text = str(error).lower()
             # Expired or revoked sign-in (e.g. unused for 90 days, password changed).
@@ -550,11 +698,49 @@ class Daemon:
                 self.store.log("error", None, "OneDrive no longer accepts the saved sign-in. "
                                               "Sign in again (tray menu, or: onedrive-ondemand setup).")
             self.signin_needed = expired
-            self.online = False if self.rclone_ok else None
+            if not expired:  # with an expired sign-in the network itself is fine
+                self.set_online(False if self.rclone_ok else None)
+
+    def set_online(self, online):
+        was = self.online
+        self.online = online
+        if was is False and online:
+            if not self.offline_mode():  # reconnect() says more in that case
+                self.store.log("online", None, "Back online.")
+            # Stand-in previews made while offline: delete them so the real
+            # ones are fetched next time you open the folder.
+            for uri in self.previews.placeholders():
+                previews.delete(uri)
+        elif was and online is False:
+            self.store.log("offline", None, "Offline: downloaded files still open; "
+                                            "changes upload once you're back online.")
 
     def online_loop(self):
-        """Check the connection every minute (the full upkeep pass is every 5)."""
-        self.check_online()
+        """Check the connection often (cheap); ask rclone about the sign-in each minute."""
+        if self.online is not True or time.monotonic() - self.last_online_check > 60:
+            self.check_online()
+        elif not graph.reachable():
+            self.set_online(False)
+        if self.offline_mode() and self.online:
+            self.reconnect()
+
+    def reconnect(self):
+        """Back online after starting offline: switch to the normal mount.
+
+        Restarting the mount closes every file shown in it, so wait until no
+        program has one open.
+        """
+        if cachemod.open_files(self.mount, self.cache.data_root):
+            if not self.waiting_to_reconnect:
+                self.store.log("online", None, "Back online. OneDrive reconnects as soon as no "
+                                               "program has a file from it open.")
+            self.waiting_to_reconnect = True
+            return
+        self.waiting_to_reconnect = False
+        self.store.log("online", None, "Back online: reconnecting OneDrive.")
+        subprocess.run(["systemctl", "--user", "restart", self.account.mount_service],
+                       capture_output=True, timeout=120)
+        self.last_warm = 0.0  # fresh mount: read all folder listings again soon
 
     def upkeep(self):
         """Follow renames, top up pins, free space. Returns a short summary."""
@@ -563,8 +749,12 @@ class Daemon:
 
     def _upkeep(self):
         self.check_online()
+        if self.offline_mode():
+            # Nothing to do until we're back on the normal mount (online_loop).
+            return {"offline_mode": True}
 
         all_checked = self.check_rules()
+        self.warm_listings()
         queued = 0
         if self.rclone_ok:
             for rule in self.store.rules():
@@ -578,6 +768,28 @@ class Daemon:
         self.last_upkeep = datetime.now(timezone.utc).isoformat(timespec="seconds")
         return {"rules_checked": all_checked, "pin_downloads_queued": queued,
                 "freed": len(freed), "online": self.online}
+
+    def warm_listings(self):
+        """Read every folder listing, so folders still show while offline (DESIGN.md §4).
+
+        rclone keeps folder listings in memory only, and reads a folder from
+        OneDrive the first time you open it. Without this, a folder you
+        hadn't opened since the mount started can't be opened offline.
+        """
+        if not (self.rclone_ok and self.online):
+            return
+        if time.monotonic() - self.last_warm < WARM_LISTINGS_SECONDS and self.last_warm:
+            return
+        try:
+            self.rc("vfs/refresh", {"recursive": "true"}, timeout=600)
+            self.last_warm = time.monotonic()
+        except rclone.RcError as error:
+            print(f"Couldn't refresh folder listings: {error}", flush=True)
+
+    def preview_cleanup(self):
+        """Delete previews of folders you're no longer looking at (DESIGN.md §8)."""
+        for uri in self.previews.expired():
+            previews.delete(uri)
 
     def evict(self, timer_allowed):
         rules = self.store.rules()
@@ -596,7 +808,7 @@ class Daemon:
                 continue
             candidates.append(Candidate(rel, atime, sidecar["ATime"], self.cache.disk_bytes(rel)))
 
-        usage = shutil.disk_usage(config.CACHE_DIR)
+        usage = shutil.disk_usage(self.account.cache_dir)
         chosen = choose_evictions(candidates, datetime.now(timezone.utc),
                                   self.settings["evict_after_days"], usage.free, usage.total,
                                   self.settings["min_free_space_percent"], timer_allowed)
@@ -615,25 +827,30 @@ class Daemon:
     # --- running -------------------------------------------------------------
 
     def run(self):
-        config.RUNTIME_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        server = ipc.serve(self.handle)
+        self.account.runtime_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        server = ipc.serve(self.handle, self.account.daemon_socket)
+        # Previews left over from the last run aren't tracked any more: remove them.
+        previews.delete_all_under(self.mount)
         signal.signal(signal.SIGTERM, lambda *_: self.stopping.set())
         signal.signal(signal.SIGINT, lambda *_: self.stopping.set())
 
         threads = [threading.Thread(target=self.loop, args=(self.poll_queue, QUEUE_POLL_SECONDS),
                                     name="uploads", daemon=True),
                    threading.Thread(target=self.upkeep_loop, name="upkeep", daemon=True),
-                   threading.Thread(target=self.loop, args=(self.online_loop, 60),
-                                    name="online", daemon=True)]
+                   threading.Thread(target=self.loop, args=(self.online_loop, ONLINE_CHECK_SECONDS),
+                                    name="online", daemon=True),
+                   threading.Thread(target=self.loop,
+                                    args=(self.preview_cleanup, PREVIEW_CLEANUP_SECONDS),
+                                    name="previews", daemon=True)]
         threads += [threading.Thread(target=self.pin_worker, name=f"pins-{n}", daemon=True)
                     for n in range(PIN_WORKERS)]
         for thread in threads:
             thread.start()
-        print(f"Daemon running. Socket: {ipc.DAEMON_SOCKET}", flush=True)
+        print(f"Daemon for {self.account.id} running. Socket: {self.account.daemon_socket}", flush=True)
         self.stopping.wait()
         server.shutdown()
         server.server_close()
-        ipc.DAEMON_SOCKET.unlink(missing_ok=True)
+        self.account.daemon_socket.unlink(missing_ok=True)
         self.store.close()
 
     def loop(self, function, seconds):
@@ -666,5 +883,5 @@ def human(n):
     return f"{n:.0f} {unit}" if unit == "bytes" else f"{n:.1f} {unit}"
 
 
-def main():
-    Daemon().run()
+def main(account_id):
+    Daemon(config.Account(account_id)).run()

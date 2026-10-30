@@ -45,9 +45,8 @@ def installed_version(rclone="rclone"):
     return parse_version(result.stdout)
 
 
-def mount_command(settings, rclone="rclone", rclone_conf=config.RCLONE_CONF,
-                  cache_dir=config.CACHE_DIR, rc_socket=config.RC_SOCKET):
-    """The full `rclone mount` command line, as a list for subprocess/exec.
+def mount_command(account, settings, rclone="rclone"):
+    """The full `rclone mount` command line for one account, as a list for exec.
 
     Each flag is explained, because they are the heart of how the client behaves.
     """
@@ -65,8 +64,8 @@ def mount_command(settings, rclone="rclone", rclone_conf=config.RCLONE_CONF,
         f"{config.REMOTE_NAME}:{folder}",
         str(config.mount_path(settings)),
         # Use our own config file, never ~/.config/rclone/rclone.conf.
-        "--config", str(rclone_conf),
-        "--cache-dir", str(cache_dir),
+        "--config", str(account.rclone_conf),
+        "--cache-dir", str(account.cache_dir),
         # Download files on demand and keep what was read on disk.
         "--vfs-cache-mode", "full",
         # Never free files by age: our daemon does that, because it knows
@@ -84,14 +83,45 @@ def mount_command(settings, rclone="rclone", rclone_conf=config.RCLONE_CONF,
         # polling above updates any folder that changes on OneDrive, and it
         # means folders still list while you're offline.
         "--dir-cache-time", "1000h",
+        # Give up on a failed request after 3 tries instead of 10. Offline, this
+        # makes opening a file that isn't downloaded fail after about half a
+        # minute instead of hanging the program for 3+ minutes (tested
+        # 2026-10-30, RESEARCH.md §10). Uploads are retried later anyway.
+        "--low-level-retries", "3",
         # Remote control API on a private unix socket. Our daemon (milestone b)
         # uses it to read the upload queue. The socket's folder is mode 700,
         # so only you can reach it, which is why no password is needed.
-        "--rc", "--rc-addr", f"unix://{rc_socket}", "--rc-no-auth",
+        "--rc", "--rc-addr", f"unix://{account.rc_socket}", "--rc-no-auth",
         # Name shown for the mount in the file manager.
-        "--volname", "OneDrive",
+        "--volname", config.display_name(settings),
         # INFO logs every upload, which helps when something goes wrong.
-        # Read them with: journalctl --user -u onedrive-ondemand-mount
+        # Read them with: journalctl --user -u onedrive-ondemand-mount@<account>
+        "--log-level", "INFO",
+    ]
+
+
+def offline_mount_command(account, settings, files_from, rclone="rclone"):
+    """The mount used when OneDrive can't be reached as the mount starts (DESIGN.md §4).
+
+    rclone only remembers folder listings in memory, so a normal mount that
+    starts offline can't show *anything*, not even downloaded files (tested
+    2026-10-30, RESEARCH.md §10). Instead we show the downloaded files
+    straight from the cache folder:
+    - read-only, so nothing can be saved where rclone wouldn't upload it,
+    - only files that are fully downloaded (`files_from` lists them), because
+      partly downloaded files are mostly empty space on disk.
+    The daemon switches back to the normal mount once OneDrive is reachable.
+    """
+    cache = Path(account.cache_dir) / "vfs" / config.REMOTE_NAME / settings["remote_folder"]
+    return [
+        rclone, "mount", str(cache), str(config.mount_path(settings)),
+        "--read-only",
+        "--files-from", str(files_from),
+        # No remotes are used, so no config file is needed.
+        "--config", "/dev/null",
+        # Same remote control socket, so the daemon can see the mount is alive.
+        "--rc", "--rc-addr", f"unix://{account.rc_socket}", "--rc-no-auth",
+        "--volname", config.display_name(settings) + " (offline)",
         "--log-level", "INFO",
     ]
 
@@ -140,7 +170,7 @@ def parse_authorize_output(output):
     return json.dumps(data, separators=(",", ":"))
 
 
-def write_rclone_conf(token, drive_id, drive_type, path=config.RCLONE_CONF):
+def write_rclone_conf(token, drive_id, drive_type, path):
     """Write our own rclone config file, readable only by you (mode 600).
 
     It contains the sign-in token, so it must never be committed to git.
@@ -163,8 +193,8 @@ def write_rclone_conf(token, drive_id, drive_type, path=config.RCLONE_CONF):
     os.replace(tmp, path)
 
 
-def read_rclone_conf(path=config.RCLONE_CONF):
-    """Our rclone config as a dict of {setting: value}, or None if missing."""
+def read_rclone_conf(path):
+    """An account's rclone config as a dict of {setting: value}, or None if missing."""
     try:
         with open(path, encoding="utf-8") as f:
             lines = f.read().splitlines()
@@ -178,8 +208,8 @@ def read_rclone_conf(path=config.RCLONE_CONF):
     return values
 
 
-def read_token(path=config.RCLONE_CONF):
-    """The current token (a dict) from our rclone config, or None.
+def read_token(path):
+    """The current token (a dict) from an account's rclone config, or None.
 
     rclone refreshes the token by itself and writes the new one back into
     this file, so always read it fresh rather than keeping a copy.
@@ -191,7 +221,8 @@ def read_token(path=config.RCLONE_CONF):
 
 
 # --- Remote control (rc) API ---------------------------------------------
-# The running `rclone mount` answers JSON requests on a private unix socket.
+# Each running `rclone mount` answers JSON requests on a private unix socket
+# (Account.rc_socket).
 # See https://rclone.org/rc/ for the list of commands.
 
 class RcError(Exception):
@@ -211,8 +242,8 @@ class _UnixHTTPConnection(http.client.HTTPConnection):
         self.sock.connect(self.socket_path)
 
 
-def rc(command, params=None, socket_path=config.RC_SOCKET, timeout=30):
-    """Send one command to the running rclone mount and return its answer (a dict)."""
+def rc(socket_path, command, params=None, timeout=30):
+    """Send one command to a running rclone mount and return its answer (a dict)."""
     connection = _UnixHTTPConnection(socket_path, timeout)
     try:
         connection.request("POST", "/" + command, body=json.dumps(params or {}),
