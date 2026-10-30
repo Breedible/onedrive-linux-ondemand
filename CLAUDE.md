@@ -11,6 +11,8 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
   turns out to be wrong when tested, explain why and propose a change before
   building around it.
 
+> **If `HANDOFF.md` exists in this repo, read it and do its tasks first.**
+
 ## Current status
 - Design approved 2026-10-30. **No code yet.**
 - Next: **milestone (a)**: `setup` (browser sign-in, our own rclone config
