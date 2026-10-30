@@ -32,7 +32,12 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
   extension, icons, menu + autostart). `setup` notices when it runs from the
   installed package and removes per-user copies from a source-folder setup.
   `onedrive-ondemand uninstall`. README covers install/uninstall/limitations.
-- Next: **milestone (f)**: conflict guard.
+- **Milestone (f) done 2026-10-30:** conflict guard (`conflicts.py`).
+  Results in `docs/RESEARCH.md` §9.
+- **All milestones a–f are built.** Not yet tested: offline behaviour
+  (network cable out), a reboot, installing the `.deb`, OneDrive Business.
+  The client only shows `LinuxClientTest`; showing the whole drive is the
+  next step after the maintainer's own testing (safety rule 1).
 - Live tests go in `LinuxClientTest/_dev-tests/`. Other folders in there are the
   maintainer's own test files: only ever read them, never change them.
 - Milestones run in order a → f. After each one: explain in plain language

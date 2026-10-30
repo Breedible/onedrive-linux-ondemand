@@ -25,6 +25,7 @@ from pathlib import Path
 
 from onedrive_ondemand import cache as cachemod
 from onedrive_ondemand import config, graph, ipc, pins, rclone
+from onedrive_ondemand.conflicts import ConflictGuard
 
 QUEUE_POLL_SECONDS = 2
 UPKEEP_SECONDS = 5 * 60
@@ -124,7 +125,8 @@ class Daemon:
         self.pin_errors = {}           # path -> error message
         self.last_upkeep = None
         self.cache_bytes = 0
-        self.upload_hooks = []         # functions called with the queue on every poll
+        # Functions called with (queue, finished uploads) on every queue poll.
+        self.upload_hooks = [ConflictGuard(self)]
 
     # --- helpers -----------------------------------------------------------
 

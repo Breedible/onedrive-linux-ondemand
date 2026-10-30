@@ -207,6 +207,24 @@ files):
 - One tray at a time: a second start sees the lock in
   `/run/user/<uid>/onedrive-ondemand/tray.lock` and exits.
 
+## 9. Milestone (f) results (2026-10-30)
+
+- **The sidecar keeps the OneDrive fingerprint while a change waits to
+  upload:** clean `"10,…,7628…0000","Dirty":false` → after an in-place edit
+  `"10,…,7628…0000","Dirty":true`. The hash matches `operations/stat`'s
+  `Hashes.quickxor` exactly. After upload it changes to the new version's.
+- **Save-by-rename** (write a temporary file, then rename it over the
+  original, like gedit) leaves `"Fingerprint":""`, hence the extra
+  `synced` record.
+- Live tests in `_dev-tests`:
+  - Changed on OneDrive (Graph upload), then within a second appended to
+    in `~/OneDrive`: the guard made `conflict-test (conflict copy … 1607).txt`
+    with OneDrive's text and uploaded the Linux version as the main file.
+  - The same with a save-by-rename: conflict copy made correctly.
+  - Plain edits with no change elsewhere: uploaded, no conflict copy.
+- Server-side copy (`operations/copyfile` within the same remote) works on
+  OneDrive Personal; the copy shows in `~/OneDrive` after the next poll.
+
 ## Sources
 
 - rclone mount docs: https://rclone.org/commands/rclone_mount/

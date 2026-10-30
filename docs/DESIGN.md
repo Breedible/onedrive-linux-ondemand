@@ -1,7 +1,7 @@
 # Design: onedrive-linux-ondemand
 
-Status: **approved 2026-10-30** (see §12). Milestone (a) built 2026-10-30;
-two small changes from testing are in §12. Research behind these
+Status: **approved 2026-10-30** (see §12). Milestones (a)–(f) built
+2026-10-30; changes found while testing are noted in §12 and in the sections. Research behind these
 decisions is in [RESEARCH.md](RESEARCH.md).
 
 ## 1. What Linux can and cannot do (read this first)
@@ -214,16 +214,24 @@ uploads it over the remote one. The other edit isn't lost, because OneDrive
 keeps it in **version history** (web → right-click → Version history). But
 you wouldn't notice.
 
-**Our guard (milestone f, experimental):** the daemon watches rclone's upload
-queue. For each queued file it compares the OneDrive copy with the version
-we last saw in sync (we record that from the sidecar while the file is clean,
-because rclone blanks it once the file is modified). If OneDrive's copy
-changed in the meantime, the daemon makes a **server-side copy** of the
-OneDrive version, named `report (conflict copy 2026-10-30 1530).docx`,
-before rclone uploads yours. That gives you both copies, and the tray shows a
-notification. If rclone uploads before the guard runs (a short race), version
-history is still the fallback. We will say "best effort" in the README, not
-"guaranteed".
+**Our guard (milestone f, built 2026-10-30):** for every file that appears
+in rclone's upload queue, the daemon holds the upload (`vfs/queue-set-expiry`,
+at most 2 minutes) and compares OneDrive's current version with the version
+your edit started from. If OneDrive's copy changed in the meantime, it makes
+a **server-side copy** of the OneDrive version, named
+`report (conflict copy 2026-10-30 1530).docx`, then lets your upload go. You
+get both copies, and the tray shows a notification.
+
+The "version your edit started from" is the hash in rclone's sidecar
+fingerprint, which rclone **keeps** while the change waits to upload
+(verified; an earlier version of this document wrongly assumed it was
+blanked). Editors that save by writing a temporary file and renaming it
+(gedit, many others) leave an empty fingerprint, so the daemon also
+records the last in-sync version of each file (after each upload and
+whenever rclone downloads a file) and uses that instead. If neither is
+known, or the check fails (offline), the upload goes ahead as plain rclone
+would, and version history remains the fallback. The README says "best
+effort", not "guaranteed".
 
 ## 8. Other failure modes and limitations
 
@@ -268,6 +276,7 @@ onedrive_ondemand/
   cache.py      reads sidecars, works out file state, frees one file
   pins.py       SQLite pin rules and "effective state" lookup
   daemon.py     main loop: eviction, pin downloads, status, activity
+  conflicts.py  conflict guard (§7)
   ipc.py        JSON messages over a unix socket (daemon <-> CLI/tray/Nemo)
   cli.py        command-line interface
   status.py     one-line status summary shared by CLI and tray
