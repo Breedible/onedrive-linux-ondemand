@@ -11,16 +11,18 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
   turns out to be wrong when tested, explain why and propose a change before
   building around it.
 
-> **If `HANDOFF.md` exists in this repo, read it and do its tasks first.**
-
 ## Current status
-- Design approved 2026-10-30. **No code yet.**
-- Next: **milestone (a)**: `setup` (browser sign-in, our own rclone config
-  restricted to the `LinuxClientTest` folder) and the mount running as a
-  `systemd --user` service. Also verify every item marked *(verify)* in the
-  docs, and record the results in `docs/RESEARCH.md`.
+- Design approved 2026-10-30.
+- **Milestone (a) done 2026-10-30:** `onedrive-ondemand setup` (browser
+  sign-in, our own rclone config, mount of `LinuxClientTest` as the
+  `onedrive-ondemand-mount` systemd user service). Verification results are in
+  `docs/RESEARCH.md` §5.
+- Next: **milestone (b)**: daemon + CLI (`pin`, `unpin`, `free`, `status`,
+  eviction loop, pins following renames). Check the Business ID format.
 - Milestones run in order a → f. After each one: explain in plain language
   how to test it and what is still missing, then commit.
+- Run tests with: `python3 -m unittest discover -s tests -t .`
+- Run from the source folder with: `./bin/onedrive-ondemand <command>`
 
 ## How to work on this repo
 - The maintainer is a **beginner coder**. Keep code simple and readable,
@@ -32,9 +34,10 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
 - Ask before anything outward-facing (pushing, publishing releases).
 
 ## Safety rules (non-negotiable)
-1. During development, rclone may only see the `LinuxClientTest` folder
-   (set as the remote root). Never point it at the whole drive except with
-   `--read-only`.
+1. During development, rclone may only see the `LinuxClientTest` folder:
+   mount it by path (`onedrive-ondemand:LinuxClientTest`). **Don't use
+   `root_folder_id` for this: uploads ignore it** (RESEARCH.md §5). Never
+   point it at the whole drive except with `--read-only`.
 2. Never run `rclone sync`, `bisync`, `delete`, `purge`, `cleanup`, or use
    `--onedrive-hard-delete`.
 3. Test cache, eviction and pin logic against a fake cache folder in unit

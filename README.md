@@ -3,8 +3,9 @@
 A Linux desktop client for Microsoft OneDrive that aims to behave like the
 Windows client's **Files On-Demand**, built for Linux Mint (Cinnamon / Nemo).
 
-> **Status: early design stage. Nothing here is usable yet.**
-> Do not point this at OneDrive data you care about.
+> **Status: early development (milestone a of f).** Only the basic mount
+> works, and only for a test folder. Do not point this at OneDrive data you
+> care about.
 
 ## Goals
 

@@ -1,6 +1,7 @@
 # Design: onedrive-linux-ondemand
 
-Status: **approved 2026-10-30** (see §12). Nothing is built yet. Research behind these
+Status: **approved 2026-10-30** (see §12). Milestone (a) built 2026-10-30;
+two small changes from testing are in §12. Research behind these
 decisions is in [RESEARCH.md](RESEARCH.md).
 
 ## 1. What Linux can and cannot do (read this first)
@@ -113,8 +114,9 @@ The rule is keyed on that ID, and the path is only a "last known location".
    frees space in a disk-nearly-full emergency. A just-renamed pinned file is
    therefore never freed by mistake.
 
-**(verify in milestone b):** the exact ID format rclone returns for Personal
-vs Business, and that it matches what Graph expects.
+**Verified for Personal (2026-10-30):** rclone returns `ID` as
+`<driveID>#<itemID>`; Graph wants the part after `#`. Business is still to
+check in milestone b.
 
 ## 4. Where your data physically lives
 
@@ -133,9 +135,11 @@ vs Business, and that it matches what Graph expects.
   folder. All downloaded/pinned data is still in the cache folder above.
   Edits that weren't uploaded yet are uploaded automatically the next time
   the mount starts. To stop programs accidentally saving into the empty
-  folder (those files would be hidden once the mount comes back), setup makes
-  the bare `~/OneDrive` folder read-only. rclone also refuses to mount over a
-  non-empty folder.
+  folder (those files would be hidden once the mount comes back), the bare
+  `~/OneDrive` folder is read-only while not mounted. fusermount can't mount
+  onto a read-only folder, so the service makes it writable just before
+  mounting and read-only again after rclone stops. rclone also refuses to
+  mount over a non-empty folder.
 - **Mount crashed hard:** the folder may show "Transport endpoint is not
   connected". The service restarts it automatically (it runs `fusermount -uz`
   first).
@@ -171,7 +175,8 @@ Our daemon runs a check every 5 minutes:
 4. **To free a file:** re-read its sidecar immediately before acting. If it
    became dirty or was accessed, skip it. Otherwise delete the cache file
    and its sidecar. rclone detects this and treats the file as online-only
-   again **(verify in milestone b)**.
+   again (verified, RESEARCH.md §5). Note that rclone writes a sidecar's
+   ranges a few seconds after a file is closed.
 
 "Free up space" from the menu does steps 1 and 4 immediately for the chosen
 files. It refuses, with a clear message, for files that are open or still
@@ -231,9 +236,12 @@ history is still the fallback. We will say "best effort" in the README, not
 
 ## 9. Development safety rules
 
-1. Our rclone config points at **one throwaway folder**, `LinuxClientTest`,
-   in your OneDrive, set as the remote root, so rclone cannot see or touch
-   anything outside it.
+1. rclone is only ever given **one throwaway folder**, `LinuxClientTest`,
+   in your OneDrive: the mount is `onedrive-ondemand:LinuxClientTest`, so
+   every path it lists or uploads is inside that folder. Every setup run
+   saves a test file through the mount and checks with Graph that it arrived
+   there; if not, setup turns the mount off. (`root_folder_id` was tried
+   first and is **not** safe: uploads ignored it. See RESEARCH.md §5.)
 2. The first time we look at the whole drive, the mount uses `--read-only`.
 3. The eviction and pin code is tested first against a **fake cache folder**
    on disk (unit tests), before it ever touches a real mount.
@@ -246,7 +254,10 @@ history is still the fallback. We will say "best effort" in the README, not
 ```
 onedrive_ondemand/
   config.py     paths and settings
-  rclone.py     builds the rclone command line; small rc API client
+  rclone.py     builds the rclone command line; sign-in; our rclone.conf
+  graph.py      a few direct Microsoft Graph calls (drive, folder, item lookup)
+  mount.py      prepares ~/OneDrive, starts rclone; cleans up after it stops
+  setup_wizard.py  `setup`: sign-in, folder, service, upload-location check
   cache.py      reads sidecars, works out file state, frees one file
   pins.py       SQLite pin rules and "effective state" lookup
   daemon.py     main loop: eviction, pin downloads, status, activity
@@ -254,6 +265,7 @@ onedrive_ondemand/
   cli.py        command-line interface
   tray.py       tray icon
 nemo/onedrive_ondemand_nemo.py   Nemo extension
+bin/            onedrive-ondemand launcher for running from the source folder
 data/           emblem icons, systemd units, autostart .desktop file
 packaging/      build-deb.sh
 tests/          unit tests (fake cache folder, no network)
@@ -288,3 +300,9 @@ would add work without working properly.
    already treats the mount as remote (§8).
 4. **Pins must follow renames/moves:** in scope now, via OneDrive item IDs
    (§3), built in milestone (b).
+5. **Changes after milestone (a) testing (2026-10-30, approved):**
+   - Restrict to the test folder by mounting it by path, not via
+     `root_folder_id`, plus a setup check of where uploads land (§9).
+   - Make `~/OneDrive` writable just before mounting and read-only again
+     after unmounting, because fusermount can't mount onto a read-only
+     folder (§4).

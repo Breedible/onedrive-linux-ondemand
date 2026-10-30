@@ -24,7 +24,7 @@ What `rclone mount --vfs-cache-mode full` gives us:
 | Remote control | `rclone mount --rc` exposes `vfs/queue` (upload queue), `vfs/stats`, `core/stats`, `vfs/forget`, `vfs/refresh`. |
 
 The OneDriveUI project's research notes (see §4) describe experiments on
-rclone 1.75.0 showing **(verify)**:
+rclone 1.75.0 showing (all verified, see §5):
 
 - The sidecar JSON tells us a file's state: `Rs` = which byte ranges are
   cached (full / partial / none) and `Dirty: true` = local change not yet
@@ -60,7 +60,7 @@ doc for how we add a best-effort guard on top.
 - Deletes go to the OneDrive recycle bin (unless `--onedrive-hard-delete`,
   which we will never use).
 - Remote-change detection: rclone polls (`--poll-interval`, default 1 min)
-  **(verify that OneDrive change polling is active)**.
+  (verified: §5).
 
 ### Own client ID
 
@@ -93,6 +93,59 @@ Start a new, small Python project that **drives rclone** rather than forking:
    ourselves, without copying code.
 3. Small and readable is a requirement. Our own code is only the thin layer
    rclone lacks: pin list, eviction, status, Nemo, tray.
+
+## 5. Verified on the maintainer's machine (milestone a, 2026-10-30)
+
+Linux Mint 22.3 Cinnamon, Python 3.12.3, rclone **v1.75.2** (the `.deb`
+from rclone.org), fuse3 3.14, personal OneDrive account. VFS behaviour was
+first tested against a local folder (no OneDrive involved), then on the real
+mount of `LinuxClientTest`.
+
+| Claim | Result |
+|---|---|
+| Sidecar JSON shows cached ranges (`Rs`) and pending upload (`Dirty`) | **Confirmed.** A 100 KB read of a 3 MB file gave `Rs: [{Pos: 0, Size: 1044480}]` (rclone reads ahead about 1 MB). A full read gave one range covering the whole size. A local edit sets `Dirty: true`, then `false` once uploaded. **Catch:** `Rs` is written a few seconds *after* the file is closed; straight after a read it can still be `null`. The daemon must not treat a just-read file as online-only. |
+| Cache files are sparse | **Confirmed.** After the partial read the cache file used 252 KB of disk for an apparent size of 4.9 MB. |
+| Reading end-to-end fully downloads (how we pin) | **Confirmed.** The cache file was byte-identical to the original. |
+| Deleting cache file + sidecar while mounted is detected and recovers (how we free one file) | **Confirmed.** Log: `vfs cache: detected external removal of cache file`. The next read re-downloaded it correctly. |
+| Edits not yet uploaded survive a restart | **Confirmed.** Stopped rclone with an edit still queued (`--vfs-write-back 1h`); on the next start it was queued again and uploaded. |
+| rclone unmounts by itself on SIGTERM | **Confirmed.** So `systemctl --user stop` unmounts cleanly. |
+| Upload after save | **Confirmed** on OneDrive: queued, then `upload succeeded try #1` about 5 s later. `vfs/queue` lists the waiting file with `tries` and `delay`. |
+| OneDrive change polling is active | **Confirmed.** A file created directly on OneDrive (Graph API, not through the mount) appeared in `~/OneDrive` after **34 s**, with `--poll-interval 1m` and `--dir-cache-time 1000h`, so polling (not cache expiry) refreshed the listing. |
+| rc API on a unix socket | **Works** with `--rc-addr unix:///run/user/1000/onedrive-ondemand/rclone.sock`. **Catch:** Linux limits socket paths to about 108 characters; a longer path fails with `bind: invalid argument`. |
+| Service restarts after a crash | **Confirmed.** After `kill -9` of rclone, systemd restarted it within about 10 s and the folder was mounted again. |
+| Item ID format (needed for milestone b) | rclone's `operations/stat` returns `ID` as **`<driveID>#<itemID>`**, e.g. `0123456789ABCDEF#0123456789ABCDEF!s0a1b2c...` (made-up example). Graph's `GET /me/drive/items/{id}` accepts the part **after `#`**. Personal account only so far; Business not yet tested. |
+
+### Surprises (and what we changed)
+
+1. **fusermount refuses a read-only mount folder.** Mounting onto a `555`
+   folder fails: `fusermount3: user has no write access to mountpoint`.
+   The design's "make the bare `~/OneDrive` read-only" still works, but the
+   service now makes the folder writable just before mounting and read-only
+   again after rclone stops (`mount.py`). Confirmed: when stopped, saving
+   into `~/OneDrive` gives "Permission denied".
+2. **`root_folder_id` does not restrict uploads.** Setup first set
+   `root_folder_id` in our rclone config to the `LinuxClientTest` folder's ID.
+   Listings respected it, but **a new file saved through the mount was
+   uploaded to the top level of the drive.** (We moved it back; nothing else
+   was affected.) Probably rclone builds upload paths from the drive root and
+   only uses the folder ID for listings. **Fix:** mount the folder by path,
+   `onedrive-ondemand:LinuxClientTest`, and drop `root_folder_id`. Verified:
+   new files, new subfolders, nested files and edits all landed inside
+   `LinuxClientTest`, and nothing appeared at the top level. Setup now also
+   saves a hidden test file through the mount on every run and checks with
+   Graph where it arrived. If it's not in the chosen folder, setup turns the
+   mount off.
+   **Honest limit:** neither approach is a hard lock. The sign-in token can
+   reach the whole OneDrive (Microsoft has no "one folder only" permission for
+   this kind of app). The protection is that rclone only ever gets paths
+   inside the folder, and the setup check catches it if that fails.
+3. **Graph oddity:** the first `POST /me/drive/root/children` (create
+   `LinuxClientTest`) answered `404 Item not found`, but the folder **was**
+   created. Setup now addresses the top folder by its real ID instead of the
+   `root` shortcut, and with `conflictBehavior: fail` a retry never makes a
+   duplicate. (Not re-tested yet, since the folder now exists.)
+4. **`rclone authorize onedrive`** (v1.75.2) printed the token JSON between
+   the `--->` / `<---End paste` markers, and the sign-in worked first time.
 
 ## Sources
 
