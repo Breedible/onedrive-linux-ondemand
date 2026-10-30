@@ -36,7 +36,7 @@ class StateTest(unittest.TestCase):
     def test_cached_files_lists_everything(self):
         self.fake.add("a.txt")
         self.fake.add("Projects/notes/b.txt")
-        self.assertEqual(sorted(self.c.cached_files()), ["a.txt", "Projects/notes/b.txt"])
+        self.assertEqual(sorted(self.c.cached_files()), sorted(["a.txt", "Projects/notes/b.txt"]))
         self.assertEqual(list(self.c.cached_files("Projects")), ["Projects/notes/b.txt"])
         self.assertEqual(list(self.c.cached_files("a.txt")), ["a.txt"])
 
