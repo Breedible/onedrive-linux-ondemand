@@ -27,13 +27,19 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
   status, open folder, view online, pause/resume, recent activity,
   settings dialog, sign in again, notifications for problems. Autostart
   entry and "OneDrive" menu entry installed by setup.
-- Next: **milestone (e)**: `.deb`, README install/uninstall/limitations.
+- **Milestone (e) done 2026-10-30:** `packaging/build-deb.sh` builds
+  `dist/onedrive-ondemand_<version>_all.deb` (system-wide services, Nemo
+  extension, icons, menu + autostart). `setup` notices when it runs from the
+  installed package and removes per-user copies from a source-folder setup.
+  `onedrive-ondemand uninstall`. README covers install/uninstall/limitations.
+- Next: **milestone (f)**: conflict guard.
 - Live tests go in `LinuxClientTest/_dev-tests/`. Other folders in there are the
   maintainer's own test files: only ever read them, never change them.
 - Milestones run in order a → f. After each one: explain in plain language
   how to test it and what is still missing, then commit.
 - Run tests with: `python3 -m unittest discover -s tests -t .`
 - Run from the source folder with: `./bin/onedrive-ondemand <command>`
+- Build the package with: `./packaging/build-deb.sh`
 
 ## How to work on this repo
 - The maintainer is a **beginner coder**. Keep code simple and readable,

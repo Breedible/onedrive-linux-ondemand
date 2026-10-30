@@ -33,3 +33,9 @@ class MountFolderTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstalledModeTest(unittest.TestCase):
+    def test_source_checkout_is_not_installed(self):
+        # The repo has a data/ folder next to the package; the .deb doesn't.
+        self.assertFalse(setup_wizard.INSTALLED)

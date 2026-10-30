@@ -14,9 +14,21 @@ from pathlib import Path
 
 from onedrive_ondemand import config, graph, rclone
 
-# The folder that holds the onedrive_ondemand package (the repo, when
-# running from a source checkout). systemd needs it to find our code.
+# The folder that holds the onedrive_ondemand package: the repo when running
+# from a source checkout, or Python's system folder when installed from the .deb.
 SOURCE_DIR = Path(__file__).resolve().parent.parent
+# Installed from the .deb? Then the services, Nemo extension, icons and menu
+# entries are already in /usr, and setup must not add per-user copies.
+INSTALLED = not (SOURCE_DIR / "data").is_dir()
+
+# Per-user files that setup creates when running from a source checkout.
+USER_FILES = [
+    config.SYSTEMD_USER_DIR / config.MOUNT_SERVICE,
+    config.SYSTEMD_USER_DIR / config.DAEMON_SERVICE,
+    config.NEMO_EXTENSION_DIR / "onedrive_ondemand_nemo.py",
+    config.AUTOSTART_DIR / "onedrive-ondemand-tray.desktop",
+    config.APPLICATIONS_DIR / "onedrive-ondemand.desktop",
+]
 # Hidden file setup writes through the mount to check where uploads land.
 PROBE_NAME = ".onedrive-ondemand-setup-check.txt"
 
@@ -167,17 +179,26 @@ def check_upload_location(mount_path, folder_id):
 
 
 def install_services():
-    """Write the systemd units from their templates and start them at every login."""
-    config.SYSTEMD_USER_DIR.mkdir(parents=True, exist_ok=True)
-    for name in (config.MOUNT_SERVICE, config.DAEMON_SERVICE):
-        text = (SOURCE_DIR / "data" / name).read_text(encoding="utf-8")
-        text = text.replace("@SOURCE_DIR@", str(SOURCE_DIR))
-        text = text.replace("@PYTHON@", sys.executable)
-        (config.SYSTEMD_USER_DIR / name).write_text(text, encoding="utf-8")
+    """Install the systemd units (source checkout only), then start them at every login."""
+    if INSTALLED:
+        remove_user_files()  # left over from running from a source checkout
+    else:
+        config.SYSTEMD_USER_DIR.mkdir(parents=True, exist_ok=True)
+        for name in (config.MOUNT_SERVICE, config.DAEMON_SERVICE):
+            text = (SOURCE_DIR / "data" / name).read_text(encoding="utf-8")
+            text = text.replace("@SOURCE_DIR@", str(SOURCE_DIR))
+            text = text.replace("@PYTHON@", sys.executable)
+            (config.SYSTEMD_USER_DIR / name).write_text(text, encoding="utf-8")
     systemctl("daemon-reload")
     for name in (config.MOUNT_SERVICE, config.DAEMON_SERVICE):
         systemctl("enable", name)
         systemctl("restart", name)
+
+
+def remove_user_files():
+    """Delete the per-user copies of our services, Nemo extension and menu entries."""
+    for path in USER_FILES:
+        path.unlink(missing_ok=True)
 
 
 def wait_for_mount(mount_path, seconds=30):
@@ -196,6 +217,8 @@ def nemo_python_installed():
 
 def install_nemo_extension():
     """Copy our Nemo extension and emblem icons into your home folder."""
+    if INSTALLED:
+        return  # the .deb puts them in /usr/share
     text = (SOURCE_DIR / "nemo" / "onedrive_ondemand_nemo.py").read_text(encoding="utf-8")
     text = text.replace("@SOURCE_DIR@", str(SOURCE_DIR))
     config.NEMO_EXTENSION_DIR.mkdir(parents=True, exist_ok=True)
@@ -208,6 +231,9 @@ def install_nemo_extension():
 
 def install_desktop_files():
     """Start the tray icon at login, add "OneDrive" to the menu, and start the tray now."""
+    if INSTALLED:
+        start_tray("onedrive-ondemand")  # the .deb has the autostart and menu entries
+        return
     launcher = str(SOURCE_DIR / "bin" / "onedrive-ondemand")
     icon = str(config.ICON_DIR / "scalable" / "status" / "onedrive-ondemand-ok.svg")
     for name, folder in (("onedrive-ondemand-tray.desktop", config.AUTOSTART_DIR),
@@ -242,6 +268,54 @@ def apply_thumbnail_choice(show, mount_path):
                        capture_output=True)
         subprocess.run(["gio", "set", str(mount_path), "metadata::show-thumbnails", "false"],
                        capture_output=True)
+
+
+def uninstall():
+    """Stop everything and remove what setup added. Your files and settings stay.
+
+    Downloaded files (the cache) and the sign-in are kept, because the cache
+    may hold changes that haven't been uploaded yet. The message says how to
+    remove them once you're sure.
+    """
+    settings = config.load_settings()
+    mount_path = config.mount_path(settings)
+    for name in (config.DAEMON_SERVICE, config.MOUNT_SERVICE):
+        systemctl("disable", "--now", name)
+    subprocess.run(["pkill", "-f", "^python3 -m onedrive_ondemand tray"], capture_output=True)
+    if not INSTALLED:
+        remove_user_files()
+    systemctl("daemon-reload")
+    if mount_path.is_dir() and not os.path.ismount(mount_path):
+        os.chmod(mount_path, 0o755)  # the mount service made it read-only
+    apply_thumbnail_choice(True, mount_path)  # remove our "no previews" folder setting
+
+    dirty = [rel for rel in _dirty_cache_files()]
+    print("OneDrive On-Demand is stopped and won't start at login any more.")
+    print("Your files on OneDrive are untouched.")
+    if dirty:
+        print(f"\nWARNING: {len(dirty)} file(s) have changes that were never uploaded, e.g.:")
+        for rel in dirty[:5]:
+            print("  " + rel)
+        print("Run  onedrive-ondemand setup  again to upload them before deleting anything.")
+    else:
+        print("\nNo changes are waiting to upload. To also delete the downloaded copies,")
+        print("your settings and the sign-in, run:")
+        print(f"  rm -r {config.DATA_DIR} {config.CONFIG_DIR}")
+    if INSTALLED:
+        print("\nTo remove the program itself:  sudo apt remove onedrive-ondemand")
+
+
+def _dirty_cache_files():
+    """Files in the cache whose sidecar says a change hasn't been uploaded."""
+    meta_root = config.CACHE_DIR / "vfsMeta"
+    for folder, _dirs, files in os.walk(meta_root):
+        for name in files:
+            path = Path(folder) / name
+            try:
+                if json.loads(path.read_text(encoding="utf-8")).get("Dirty"):
+                    yield str(path.relative_to(meta_root))
+            except (OSError, ValueError):
+                continue
 
 
 def run():

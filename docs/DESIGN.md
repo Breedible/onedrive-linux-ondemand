@@ -275,7 +275,7 @@ onedrive_ondemand/
 nemo/onedrive_ondemand_nemo.py   Nemo extension (batched, 1 s timeout: Nemo never waits long)
 bin/            onedrive-ondemand launcher for running from the source folder
 data/           icons, systemd units, autostart and menu .desktop files
-packaging/      build-deb.sh
+packaging/      build-deb.sh (dpkg-deb, no root needed)
 tests/          unit tests (fake cache folder, no network)
 ```
 

@@ -81,6 +81,7 @@ def main():
                    help="keep at least this much of the disk free")
     commands.add_parser("tray", help="show the tray icon")
     commands.add_parser("open", help="open the OneDrive folder (and start the tray icon)")
+    commands.add_parser("uninstall", help="stop everything and undo setup (keeps your files)")
     # These are run by the systemd services, not by people.
     commands.add_parser("daemon", help="(used by the service) run the background daemon")
     commands.add_parser("mount", help="(used by the service) start rclone mount")
@@ -101,8 +102,16 @@ def main():
     elif args.command == "open":
         import subprocess
         from onedrive_ondemand import config, setup_wizard
+        if not config.RCLONE_CONF.exists():
+            # Not set up yet (e.g. just installed the .deb): run setup in a terminal.
+            subprocess.Popen(["x-terminal-emulator", "-e", "bash", "-c",
+                              f"'{sys.argv[0]}' setup; read -p 'Press Enter to close this window.'"])
+            return
         setup_wizard.start_tray(sys.argv[0] if os.path.isabs(sys.argv[0]) else "onedrive-ondemand")
         subprocess.Popen(["xdg-open", str(config.mount_path(config.load_settings()))])
+    elif args.command == "uninstall":
+        from onedrive_ondemand import setup_wizard
+        setup_wizard.uninstall()
     elif args.command == "tray":
         from onedrive_ondemand import tray
         tray.main()
