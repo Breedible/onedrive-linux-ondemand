@@ -10,6 +10,14 @@ from unittest import mock
 from onedrive_ondemand import config, daemon, previews, thumbnailer
 from tests.fakehome import FakeHome
 
+try:
+    import gi
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf  # noqa: F401
+    HAVE_PIXBUF = True
+except (ImportError, ValueError):
+    HAVE_PIXBUF = False  # e.g. GitHub's test machine; the .deb installs it
+
 
 def png_with_uri(path, uri):
     """A tiny PNG that carries a Thumb::URI text, like the ones Nemo saves."""
@@ -159,6 +167,7 @@ class ThumbnailerTest(unittest.TestCase):
         picture.fill(0xff0000ff)
         return picture
 
+    @unittest.skipUnless(HAVE_PIXBUF, "GdkPixbuf isn't installed")
     def test_wide_onedrive_preview_is_padded_for_emblems(self):
         from gi.repository import GdkPixbuf
         ok, jpeg = self.picture(176, 99).save_to_bufferv("jpeg", [], [])
@@ -170,6 +179,7 @@ class ThumbnailerTest(unittest.TestCase):
         middle = saved.get_pixels()[saved.get_rowstride() * 66 + 88 * 4 + 3]
         self.assertEqual((corner, middle), (0, 255))  # see-through edge, solid picture
 
+    @unittest.skipUnless(HAVE_PIXBUF, "GdkPixbuf isn't installed")
     def test_downloaded_files_preview_is_padded_too(self):
         from gi.repository import GdkPixbuf
         uri = (self.mount / "video.mp4").as_uri()
