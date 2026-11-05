@@ -64,7 +64,8 @@ def show_info(account):
     from onedrive_ondemand.status import summarize
     info = ask_daemon(account, "info")
     print(f"{info['name']}: {summarize(info)[1]}")
-    print(f"  OneDrive folder:   {info['folder']}  ->  {info['mount_path']}")
+    folder = info["folder"] or "(whole drive)"
+    print(f"  OneDrive folder:   {folder}  ->  {info['mount_path']}")
     print(f"  Waiting to upload: {info['queued']} ({info['uploading']} uploading now)")
     print(f"  Pin downloads:     {info['pinning']} waiting")
     for t in info.get("transfers", []):
