@@ -47,7 +47,20 @@ UPKEEP_SECONDS = 5 * 60
 PREVIEW_CLEANUP_SECONDS = 30
 # Re-read every folder listing this often, so folders you haven't opened
 # recently still show while offline (rclone keeps listings in memory only).
-WARM_LISTINGS_SECONDS = 15 * 60
+# Once an hour: with the whole drive shown, every 15 minutes meant
+# thousands of requests to OneDrive each time, and polling (1 minute)
+# already tells rclone about folders that changed.
+WARM_LISTINGS_SECONDS = 60 * 60
+# Nemo reads the start of some files just to tell their type (PNG pictures,
+# Opus audio, files without an ending...), and rclone downloads at least
+# 64 KB for any read, so small files ended up fully downloaded (DESIGN.md §4).
+# Files that get downloaded in the first minute after a folder is opened,
+# and have at most this much on disk, are freed again unless something has
+# them open. (rclone writes down what it downloaded with a delay, so we
+# look every few seconds during that minute.)
+TYPE_CHECK_SECONDS = 5
+TYPE_CHECK_WINDOW = 60
+TYPE_CHECK_BYTES = 512 * 1024
 PIN_WORKERS = 2               # files downloaded at the same time for pins
 ERROR_TRIES = 3               # an upload that failed this often counts as an error
 HOLD_SECONDS = 365 * 24 * 3600  # "don't upload yet" while paused
@@ -192,6 +205,8 @@ class Daemon:
         self.folder_states = {}        # folder -> (state, time.monotonic() worked out)
         self.folders_to_check = []     # folders waiting for folder_loop
         self.folder_sizes = {}         # folder -> (total size on OneDrive, time.monotonic())
+        self.just_opened = {}          # folder Nemo opened -> (time.time(), files cached before)
+        self.outdated_freed = {}       # file -> OneDrive version we removed an old copy for
         self.transfers = []            # files downloading/uploading right now
         self.offline_told = set()      # files we already said can't download offline
         self.last_online_check = 0.0   # time.monotonic() of the last full check
@@ -613,7 +628,24 @@ class Daemon:
 
     def cmd_viewing(self, message):
         """Nemo tells us which folders it's showing, so their previews are kept."""
-        self.previews.viewing(message.get("folders", []))
+        folders = message.get("folders", [])
+        self.previews.viewing(folders)
+        rels = set()
+        for path in folders:
+            try:
+                rels.add(self.to_rel(path))
+            except UserError:
+                pass
+        with self.lock:
+            for rel in set(self.just_opened) - rels:
+                del self.just_opened[rel]  # closed: a new look starts next time
+            for rel in rels - set(self.just_opened):
+                # Nemo may already have started reading: count anything cached
+                # in the last few seconds as new.
+                started = time.time()
+                before = {child for child, changed in self.cache.cached_children(rel).items()
+                          if changed < started - 5}
+                self.just_opened[rel] = (started, before)
         return {}
 
     def cmd_previews_off(self, message):
@@ -874,6 +906,7 @@ class Daemon:
 
         all_checked = self.check_rules()
         self.warm_listings()
+        outdated = self.remove_outdated_copies()  # before topping up pins: they get the new version
         queued = 0
         if self.rclone_ok:
             for rule in self.store.rules():
@@ -886,7 +919,7 @@ class Daemon:
         self.cache_bytes = sum(self.cache.disk_bytes(rel) for rel in self.cache.cached_files())
         self.last_upkeep = datetime.now(timezone.utc).isoformat(timespec="seconds")
         return {"rules_checked": all_checked, "pin_downloads_queued": queued,
-                "freed": len(freed), "online": self.online}
+                "freed": len(freed), "outdated_removed": outdated, "online": self.online}
 
     def warm_listings(self):
         """Read every folder listing, so folders still show while offline (DESIGN.md §4).
@@ -909,6 +942,87 @@ class Daemon:
         """Delete previews of folders you're no longer looking at (DESIGN.md §8)."""
         for uri in self.previews.expired():
             previews.delete(uri)
+
+    def undo_type_checks(self):
+        """Free small files Nemo downloaded just by opening their folder (see TYPE_CHECK_SECONDS)."""
+        with self.lock:
+            due = [(rel, before) for rel, (when, before) in self.just_opened.items()
+                   if before is not None and time.time() - when >= TYPE_CHECK_SECONDS]
+            for rel, _before in due:
+                when = self.just_opened[rel][0]
+                if time.time() - when > TYPE_CHECK_WINDOW:
+                    self.just_opened[rel] = (when, None)  # this is the last look for this visit
+            busy = set(self.queue) | self.pin_pending
+        if not due or self.offline_mode():
+            return
+        rules = self.store.rules()
+        open_now = None
+        freed = 0
+        for rel, before in due:
+            for child in set(self.cache.cached_children(rel)) - before:
+                if child in busy or self.store.is_pinned(child, rules):
+                    continue
+                sidecar = self.cache.sidecar(child)
+                if (sidecar is None or sidecar.get("Dirty")
+                        or cachemod.cached_bytes(sidecar) > TYPE_CHECK_BYTES):
+                    continue
+                if open_now is None:
+                    open_now = cachemod.open_files(self.mount, self.cache.data_root)
+                if child in open_now:
+                    continue
+                try:
+                    self.cache.free(child, expected_atime=sidecar.get("ATime"))
+                    freed += 1
+                except cachemod.CacheError:
+                    pass  # opened or changed in the meantime: keep it
+        if freed:
+            print(f"Freed {freed} file(s) Nemo downloaded only to tell their type", flush=True)
+            self.forget_folder_states()
+
+    def remove_outdated_copies(self):
+        """Remove downloaded copies of files that have changed on OneDrive since.
+
+        When a file is changed somewhere else (on another device, or on the
+        web), rclone learns about it within a minute (polling) but keeps the
+        old copy until the file is next opened: then it notices and downloads
+        the new version (tested 2026-11-05, RESEARCH.md §13). Until then the
+        file would show as downloaded, and offline you'd open the old version.
+        So we remove the old copy. A pinned file is downloaded again right
+        after (_upkeep). Files with changes of your own waiting to upload are
+        never touched: the conflict guard keeps both versions (DESIGN.md §7).
+        """
+        if not self.rclone_ok or self.online is not True or self.offline_mode():
+            return 0
+        open_now = cachemod.open_files(self.mount, self.cache.data_root)
+        with self.lock:
+            busy = set(self.queue) | self.pin_pending
+        removed = []
+        for rel in self.cache.cached_files():
+            if rel in busy or rel in open_now:
+                continue
+            sidecar = self.cache.sidecar(rel)
+            if sidecar is None or sidecar.get("Dirty"):
+                continue
+            here = cachemod.downloaded_version(sidecar)
+            try:
+                st = os.stat(self.abs_path(rel))  # what OneDrive has, from rclone's listing
+            except OSError:
+                continue  # deleted on OneDrive: rclone tidies that up itself
+            there = (st.st_size, int(st.st_mtime))
+            if here is None or here == there or self.outdated_freed.get(rel) == there:
+                continue
+            try:
+                self.cache.free(rel, expected_atime=sidecar.get("ATime"))
+            except cachemod.CacheError:
+                continue
+            self.outdated_freed[rel] = there  # never twice for the same version
+            removed.append(rel)
+        if removed:
+            names = ", ".join(removed[:3]) + (" and more" if len(removed) > 3 else "")
+            self.store.log("changed", None, f"Changed on OneDrive since it was downloaded, so the old "
+                                            f"copy on this PC was removed: {names}")
+            self.forget_folder_states()
+        return len(removed)
 
     def evict(self, timer_allowed):
         rules = self.store.rules()
@@ -962,7 +1076,9 @@ class Daemon:
                                     args=(self.preview_cleanup, PREVIEW_CLEANUP_SECONDS),
                                     name="previews", daemon=True),
                    threading.Thread(target=self.loop, args=(self.folder_loop, FOLDER_LOOP_SECONDS),
-                                    name="folders", daemon=True)]
+                                    name="folders", daemon=True),
+                   threading.Thread(target=self.loop, args=(self.undo_type_checks, TYPE_CHECK_SECONDS),
+                                    name="type-checks", daemon=True)]
         threads += [threading.Thread(target=self.pin_worker, name=f"pins-{n}", daemon=True)
                     for n in range(PIN_WORKERS)]
         for thread in threads:

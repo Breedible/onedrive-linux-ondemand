@@ -112,11 +112,55 @@ def hand_over(uri, out, size):
     return result.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0
 
 
+# Nemo leaves the emblems (cloud, tick...) off a preview that's much wider
+# than it is tall, or the other way round: the emblem would cover too much of
+# it (nemo-icon-view-grid-container.c, Nemo 6.6). Wide video stills and
+# screenshots then showed no emblem at all. So we pad previews with see-through
+# edges until the short side is at least this much of the long side.
+MIN_SIDE_RATIO = 0.75
+
+
+def padded_size(width, height):
+    """The canvas size that gives a `width` x `height` picture an emblem-friendly shape."""
+    long_side = max(width, height)
+    short_side = max(1, round(long_side * MIN_SIDE_RATIO))
+    if width >= height:
+        return width, max(height, short_side)
+    return max(width, short_side), height
+
+
+def pad_for_emblems(picture):
+    """Return the picture centred on a see-through canvas of padded_size()."""
+    import gi
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf
+
+    width, height = picture.get_width(), picture.get_height()
+    new_width, new_height = padded_size(width, height)
+    if (new_width, new_height) == (width, height):
+        return picture
+    canvas = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, True, 8, new_width, new_height)
+    canvas.fill(0x00000000)  # fully see-through
+    if not picture.get_has_alpha():
+        picture = picture.add_alpha(False, 0, 0, 0)
+    picture.copy_area(0, 0, width, height, canvas,
+                      (new_width - width) // 2, (new_height - height) // 2)
+    return canvas
+
+
+def save_png(picture, out):
+    from gi.repository import GLib
+    try:
+        picture.savev(out, "png", [], [])
+    except GLib.Error as error:
+        raise OSError(str(error)) from None
+
+
 def write_preview(jpeg, out, size):
     """Save OneDrive's preview (usually a JPEG) as the PNG Nemo expects, at most `size` pixels."""
     import gi
     gi.require_version("GdkPixbuf", "2.0")
-    from gi.repository import GdkPixbuf, GLib
+    from gi.repository import GdkPixbuf
 
     loader = GdkPixbuf.PixbufLoader()
     loader.write(jpeg)
@@ -127,10 +171,21 @@ def write_preview(jpeg, out, size):
         scale = size / max(width, height)
         picture = picture.scale_simple(max(1, round(width * scale)), max(1, round(height * scale)),
                                        GdkPixbuf.InterpType.BILINEAR)
+    save_png(pad_for_emblems(picture), out)
+
+
+def pad_file(path):
+    """Pad a preview another thumbnailer saved (a downloaded file's preview)."""
+    import gi
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf, GLib
     try:
-        picture.savev(out, "png", [], [])
-    except GLib.Error as error:
-        raise OSError(str(error)) from None
+        picture = GdkPixbuf.Pixbuf.new_from_file(path)
+    except GLib.Error:
+        return  # leave it as it is: Nemo may still be able to read it
+    padded = pad_for_emblems(picture)
+    if padded is not picture:
+        save_png(padded, path)
 
 
 def write_placeholder(out, size):
@@ -168,7 +223,8 @@ def make_onedrive_preview(account, uri, out, size):
     except (ipc.DaemonNotRunning, OSError, ValueError):
         answer = {}
     if answer.get("ok") and answer.get("local") and hand_over(uri, out, size):
-        return  # already on this computer: the normal thumbnailer read it from disk
+        pad_file(out)  # already on this computer: the normal thumbnailer read it from disk
+        return
     if answer.get("ok") and answer.get("image"):
         try:
             write_preview(base64.b64decode(answer["image"]), out, size)

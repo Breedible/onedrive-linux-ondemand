@@ -120,6 +120,40 @@ class ExtensionTest(unittest.TestCase):
                                  ("work.sock", ["/home/me/OneDrive - Work/b"])])
         self.assertEqual(files[2].emblems, [])
 
+    def test_whole_folder_in_one_request(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as mount:
+            for name in ("a.png", "b.png", "c.png"):
+                Path(mount, name).write_text("x")
+            Path(mount, "sub").mkdir()
+            self.e.mounts = {mount: "personal.sock"}
+            self.states = {f"{mount}/sub": "partial"}
+            first = FakeFile(f"{mount}/a.png")
+            self.e.update_file_info_full(None, 0, None, first)
+            self.e.answer_batch(None)
+            self.assertEqual(len(self.requests), 1)
+            asked = self.requests[0][2]
+            self.assertEqual(sorted(asked["paths"]), sorted(f"{mount}/{n}" for n in
+                                                            ("a.png", "b.png", "c.png", "sub")))
+            self.assertEqual(asked["dirs"], [f"{mount}/sub"])
+            # The rest of the folder is answered at once, without asking again.
+            rest = [FakeFile(f"{mount}/b.png"), FakeFile(f"{mount}/sub", is_dir=True)]
+            results = [self.e.update_file_info_full(None, i, None, f) for i, f in enumerate(rest, 1)]
+            self.assertEqual(results, [Nemo.OperationResult.COMPLETE] * 2)
+            self.assertEqual(len(self.requests), 1)
+            self.assertEqual([f.emblems for f in rest], [["onedrive-online"], ["onedrive-partial"]])
+
+    def test_refresh_only_asks_about_open_folders(self):
+        a, b = FakeFile("/home/me/OneDrive/open/a"), FakeFile("/home/me/OneDrive/closed/b")
+        for i, f in enumerate((a, b)):
+            self.e.update_file_info_full(None, i, None, f)
+        self.e.answer_batch(None)
+        self.e.windows = {1: "/home/me/OneDrive/open"}
+        self.requests.clear()
+        self.e.refresh()
+        status = [args["paths"] for _sock, cmd, args in self.requests if cmd == "status"]
+        self.assertEqual(status, [["/home/me/OneDrive/open/a"]])
+
     def test_account_folder_itself_gets_no_emblem(self):
         self.assertIsNone(self.e.path_of(FakeFile("/home/me/OneDrive - Work", is_dir=True)))
 

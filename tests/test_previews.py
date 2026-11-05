@@ -147,6 +147,42 @@ class ThumbnailerTest(unittest.TestCase):
             thumbnailer.main(uri, self.out, 128)
         self.assertTrue(Path(self.out).read_bytes().startswith(b"\x89PNG"))
 
+    def test_padded_size(self):
+        self.assertEqual(thumbnailer.padded_size(176, 99), (176, 132))   # a wide video still
+        self.assertEqual(thumbnailer.padded_size(99, 176), (132, 176))   # a phone photo
+        self.assertEqual(thumbnailer.padded_size(176, 140), (176, 140))  # already fine
+        self.assertEqual(thumbnailer.padded_size(50, 50), (50, 50))
+
+    def picture(self, width, height):
+        from gi.repository import GdkPixbuf
+        picture = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, width, height)
+        picture.fill(0xff0000ff)
+        return picture
+
+    def test_wide_onedrive_preview_is_padded_for_emblems(self):
+        from gi.repository import GdkPixbuf
+        ok, jpeg = self.picture(176, 99).save_to_bufferv("jpeg", [], [])
+        thumbnailer.write_preview(jpeg, self.out, 256)
+        saved = GdkPixbuf.Pixbuf.new_from_file(self.out)
+        self.assertEqual((saved.get_width(), saved.get_height()), (176, 132))
+        self.assertTrue(saved.get_has_alpha())
+        corner = saved.get_pixels()[3]          # top-left pixel: padding
+        middle = saved.get_pixels()[saved.get_rowstride() * 66 + 88 * 4 + 3]
+        self.assertEqual((corner, middle), (0, 255))  # see-through edge, solid picture
+
+    def test_downloaded_files_preview_is_padded_too(self):
+        from gi.repository import GdkPixbuf
+        uri = (self.mount / "video.mp4").as_uri()
+
+        def normal_thumbnailer(_uri, out, _size):
+            self.picture(256, 144).savev(out, "png", [], [])
+            return True
+        with mock.patch.object(thumbnailer.ipc, "request", return_value={"ok": True, "local": True}), \
+                mock.patch.object(thumbnailer, "hand_over", side_effect=normal_thumbnailer):
+            thumbnailer.main(uri, self.out, 256)
+        saved = GdkPixbuf.Pixbuf.new_from_file(self.out)
+        self.assertEqual((saved.get_width(), saved.get_height()), (256, 192))
+
     def test_other_files_are_handed_over(self):
         with mock.patch.object(thumbnailer, "hand_over", return_value=True) as hand_over:
             with self.assertRaises(SystemExit) as done:

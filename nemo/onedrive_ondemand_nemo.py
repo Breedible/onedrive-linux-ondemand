@@ -46,6 +46,13 @@ EMBLEMS = {
 STATUS_TIMEOUT = 1.0      # seconds Nemo will wait for a daemon, at most
 BATCH_DELAY_MS = 30       # collect requests this long, then ask for all at once
 REFRESH_SECONDS = 3       # how often shown emblems are re-checked
+# Nemo asks about one file at a time and waits for each answer, so asking the
+# daemon file by file was slow (30 ms or more per file). Instead, the first
+# question about a folder fetches the states of everything in it, and the
+# answers are reused for a few seconds.
+KNOWN_SECONDS = REFRESH_SECONDS + 2
+MAX_PREFETCH = 2000       # at most this many files of a folder in one request
+MAX_KNOWN = 20000
 MAX_TRACKED = 3000        # how many shown files we keep re-checking
 ACCOUNTS_SECONDS = 10     # how often we look for added or removed accounts
 VIEWING_SECONDS = 30      # how often we tell the daemons which folders are shown
@@ -60,6 +67,7 @@ class OneDriveExtension(GObject.GObject, Nemo.InfoProvider, Nemo.MenuProvider,
         self.waiting = []        # (file, handle, closure, path) waiting for a batch
         self.batch_timer = None
         self.shown = {}          # path -> (NemoFileInfo, state) for refreshing
+        self.known = {}          # path -> (state, when we were told), see KNOWN_SECONDS
         self.dirs = set()        # shown paths that are folders
         self.windows = {}        # id(window) -> folder that window shows
         self.last_viewing = (None, 0.0)  # what we last told the daemons, and when
@@ -104,6 +112,10 @@ class OneDriveExtension(GObject.GObject, Nemo.InfoProvider, Nemo.MenuProvider,
             return Nemo.OperationResult.COMPLETE
         if file.is_directory():
             self.dirs.add(path)
+        known = self.known.get(path)
+        if known and now() - known[1] < KNOWN_SECONDS:
+            self.show(file, path, known[0])  # fetched with the rest of its folder
+            return Nemo.OperationResult.COMPLETE
         self.waiting.append((file, handle, closure, path))
         if self.batch_timer is None:
             self.batch_timer = GLib.timeout_add(BATCH_DELAY_MS, self.answer_batch, provider)
@@ -115,18 +127,50 @@ class OneDriveExtension(GObject.GObject, Nemo.InfoProvider, Nemo.MenuProvider,
     def answer_batch(self, provider):
         self.batch_timer = None
         batch, self.waiting = self.waiting, []
-        states = self.ask_states([w[3] for w in batch])
+        paths = [w[3] for w in batch]
+        # Ask about everything else in the same folders too: Nemo is about to
+        # ask about those one by one.
+        extra, extra_dirs = [], set()
+        for folder in dict.fromkeys(os.path.dirname(p) for p in paths):
+            self.add_folder_contents(folder, set(paths), extra, extra_dirs)
+        states = self.ask_states(paths + extra, extra_dirs)
+        self.learn(states)
         for file, handle, closure, path in batch:
-            state = states.get(path)
-            if state in EMBLEMS:
-                file.add_emblem(EMBLEMS[state])
-            self.remember(path, file, state)
+            self.show(file, path, states.get(path))
             Nemo.info_provider_update_complete_invoke(
                 closure, provider, handle, Nemo.OperationResult.COMPLETE)
         return False  # run once
 
-    def ask_states(self, paths):
-        """States of many paths: one request per account."""
+    def show(self, file, path, state):
+        if state in EMBLEMS:
+            file.add_emblem(EMBLEMS[state])
+        self.remember(path, file, state)
+
+    def add_folder_contents(self, folder, skip, paths, dirs):
+        """Add what's in `folder` (that we don't know yet) to `paths`; its folders to `dirs`."""
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if len(paths) >= MAX_PREFETCH:
+                        break
+                    known = self.known.get(entry.path)
+                    if entry.path in skip or (known and now() - known[1] < KNOWN_SECONDS):
+                        continue
+                    paths.append(entry.path)
+                    if entry.is_dir(follow_symlinks=False):
+                        dirs.add(entry.path)
+        except OSError:
+            pass  # e.g. the folder was just deleted: ask about the files Nemo named only
+
+    def learn(self, states):
+        if len(self.known) > MAX_KNOWN:
+            self.known.clear()
+        when = now()
+        for path, state in states.items():
+            self.known[path] = (state, when)
+
+    def ask_states(self, paths, extra_dirs=()):
+        """States of many paths: one request per account. `extra_dirs`: more folders among them."""
         by_mount = {}
         for path in paths:
             mount = self.mount_of(path)
@@ -136,7 +180,8 @@ class OneDriveExtension(GObject.GObject, Nemo.InfoProvider, Nemo.MenuProvider,
         for mount, some in by_mount.items():
             try:
                 answer = ipc.request(self.mounts[mount], "status", timeout=STATUS_TIMEOUT,
-                                     paths=some, dirs=[p for p in some if p in self.dirs])
+                                     paths=some,
+                                     dirs=[p for p in some if p in self.dirs or p in extra_dirs])
             except (ipc.DaemonNotRunning, OSError, ValueError):
                 continue  # no daemon: just show no emblems for that account
             if answer.get("ok"):
@@ -154,9 +199,14 @@ class OneDriveExtension(GObject.GObject, Nemo.InfoProvider, Nemo.MenuProvider,
     def refresh(self):
         """Every few seconds, redraw emblems whose state changed."""
         self.tell_viewing()
-        if self.shown:
-            paths = list(self.shown)
+        # Only re-check what's in the folders open right now (and their
+        # subfolders, for list views with expanded folders).
+        viewed = [folder for folder in self.windows.values() if folder]
+        paths = [p for p in self.shown
+                 if not viewed or any(p.startswith(folder + os.sep) for folder in viewed)]
+        if paths:
             states = self.ask_states(paths)
+            self.learn(states)
             for path in paths:
                 if path in states and path in self.shown:
                     file, old = self.shown[path]
@@ -250,10 +300,19 @@ class OneDriveExtension(GObject.GObject, Nemo.InfoProvider, Nemo.MenuProvider,
             elif cmd == "weburl":
                 Gio.AppInfo.launch_default_for_uri(answer["url"], None)
         # Redraw the emblems of what we just changed (on Nemo's main thread).
-        GLib.idle_add(lambda: [f.invalidate_extension_info() for f in files] and False)
+        def redraw():
+            self.known.clear()  # pinning or freeing changes folders' states too
+            for f in files:
+                f.invalidate_extension_info()
+            return False
+        GLib.idle_add(redraw)
 
     def get_name_and_desc(self):
         return ["OneDrive On-Demand:::Status emblems and Always keep / Free up space for your OneDrive folders"]
+
+
+def now():
+    return GLib.get_monotonic_time() / 1e6
 
 
 def notify(title, message):

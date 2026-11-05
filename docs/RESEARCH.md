@@ -306,6 +306,46 @@ installed Nemo extension loads. The old package's `Depends: rclone (>= 1.75.0)`
 would have **failed** for anyone who installed rclone with rclone.org's
 script (it doesn't register with dpkg), so it was removed (DESIGN.md §10).
 
+## 13. Emblems and unwanted downloads in Nemo (2026-11-05)
+
+Tested on the maintainer's PC (Nemo 6.6.3, cinnamon-desktop 6.6.2, GLib
+2.80, rclone 1.75.2, whole drive shown).
+
+- **No emblem on wide previews.** Nemo skips every emblem on a picture whose
+  emblem would be bigger than 75 % of the picture's width or height
+  (`nemo-icon-view-grid-container.c`, `bad_ratio`). Video stills and
+  screenshots (16:9) never got their cloud; 4:3 pictures did. Our
+  thumbnailer now pads previews with see-through edges to at least 3:4.
+- **Nemo downloads the start of some files just to tell their type.** It
+  asks GIO for `standard::content-type`, and GIO reads the first 16 KB of a
+  file when its name doesn't settle the type: two types share the ending
+  (`*.png`: image/png and image/apng; `*.opus`, `*.ogg`, `*.html`, `*.json`
+  and more), or there's no ending. Traced with `strace -k`: one open, one
+  16 KB `read`, from GIO's file-info thread. JPEG files were never read.
+  A user-level MIME override can't fix it: GLib's xdgmime ignores
+  `<glob-deleteall/>` (`__NOGLOBS__`) from `~/.local/share/mime` (tried).
+- **rclone's read-ahead made that expensive.** After any read rclone keeps
+  downloading `--buffer-size` (default 16 MB) ahead: the 16 KB read
+  downloaded 6.3 MB of a 9.8 MB PNG. With `--buffer-size 1M`: 127 KB. A full
+  read of an 8.4 MB file still took 2.9 s.
+- **Small files ended up fully downloaded** (a 12 KB screenshot is less
+  than rclone's 64 KB minimum read), so they showed a tick although nobody
+  opened them. The daemon now frees small files that were downloaded in the
+  first minute after their folder was opened (see DESIGN.md §4). Opening
+  a folder of 98 screenshots left 27.5 MB downloaded before these
+  fixes and about 0.1-0.5 MB after, with no file fully downloaded.
+- **A downloaded file changed on another device:** changed through Graph
+  while an 18-byte copy was cached. Within about 50 s the folder listing
+  showed the new size and time, but the cached copy stayed (sidecar still
+  had the old fingerprint) until the file was opened; then rclone threw it
+  away and read the new version ("version 2"). So the content you open
+  online is always right, but until then the file looked downloaded and
+  offline you'd get the old version. The daemon now removes such copies in
+  its 5-minute pass (DESIGN.md §7).
+- Nemo asks the extension about one file at a time and waits for each
+  answer, so the 30 ms "batch" never held more than one file. The extension
+  now asks about the whole folder at once (384 files answered in 0.03 s).
+
 ## Sources
 
 - rclone mount docs: https://rclone.org/commands/rclone_mount/

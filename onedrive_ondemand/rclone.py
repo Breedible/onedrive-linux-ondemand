@@ -86,6 +86,13 @@ def mount_command(account, settings, rclone="rclone"):
         # minute instead of hanging the program for 3+ minutes (tested
         # 2026-10-30, RESEARCH.md §10). Uploads are retried later anyway.
         "--low-level-retries", "3",
+        # How far rclone downloads ahead of what a program has read (default
+        # 16 MB). Nemo reads the first 16 KB of some files just to tell their
+        # type (PNG pictures, for one), and with 16 MB of read-ahead that
+        # downloaded 6 MB of each big picture in a folder you only looked at
+        # (tested 2026-11-05, RESEARCH.md §13). Programs that really read a
+        # file keep asking for more, so it keeps downloading for them.
+        "--buffer-size", "1M",
         # Remote control API on a private unix socket. Our daemon (milestone b)
         # uses it to read the upload queue. The socket's folder is mode 700,
         # so only you can reach it, which is why no password is needed.

@@ -48,6 +48,21 @@ def cached_bytes(sidecar):
     return sum(r.get("Size", 0) for r in (sidecar.get("Rs") or []))
 
 
+def downloaded_version(sidecar):
+    """(size, modified time in whole seconds) of the OneDrive version that's on disk, or None.
+
+    rclone's sidecar "Fingerprint" looks like
+    "36,2026-11-05 16:48:29 +0000 UTC,e5b026124e93" (size, time, hash).
+    It's empty after some saves (save-by-rename, RESEARCH.md §9): then None.
+    """
+    match = re.match(r"^(\d+),(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)(?:\.\d+)? ([+-]\d{4})",
+                     sidecar.get("Fingerprint") or "")
+    if not match:
+        return None
+    when = datetime.strptime(f"{match[2]} {match[3]}", "%Y-%m-%d %H:%M:%S %z")
+    return int(match[1]), int(when.timestamp())
+
+
 def is_fully_cached(sidecar):
     """True if every byte of the file is on disk."""
     size = sidecar.get("Size", 0)
@@ -108,6 +123,20 @@ class Cache:
         for folder, _dirs, files in os.walk(top):
             for name in files:
                 yield str((Path(folder) / name).relative_to(self.meta_root))
+
+    def cached_children(self, rel):
+        """{file: time its sidecar last changed} for the cached files directly inside folder `rel`."""
+        top = self.meta_root / clean_relative(rel) if rel else self.meta_root
+        children = {}
+        try:
+            with os.scandir(top) as entries:
+                for entry in entries:
+                    if entry.is_file(follow_symlinks=False):
+                        child = f"{rel}/{entry.name}" if rel else entry.name
+                        children[child] = entry.stat(follow_symlinks=False).st_mtime
+        except OSError:
+            pass  # nothing of that folder is cached
+        return children
 
     def disk_bytes(self, rel):
         """Disk space really used by a cached file (it's sparse, so this can be small)."""

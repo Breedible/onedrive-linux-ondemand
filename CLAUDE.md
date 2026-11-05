@@ -49,6 +49,9 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
   Tested in a container (Ubuntu 24.04, rclone 1.60, Cinnamon's thumbnail
   library, Xvfb for the tray). **Not yet tested on the maintainer's PC with
   real OneDrive:** all of 0.2, plus a reboot and OneDrive Business.
+- **2026-11-05 fixes** (RESEARCH.md §13): emblems on folders and wide
+  previews, fewer downloads caused by Nemo's file-type checks, old copies of
+  files changed elsewhere are removed. Not yet tested by the maintainer.
 - **Whole drive shown since 2026-11-05**, with full editing (the maintainer's
   choice, instead of read-only first). `remote_folder` `""` is the default.
 - Live tests go in `LinuxClientTest/_dev-tests/`. Other folders in there are the
