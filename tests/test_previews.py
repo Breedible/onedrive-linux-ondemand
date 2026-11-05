@@ -202,7 +202,7 @@ class DaemonPreviewTest(unittest.TestCase):
                 mock.patch.object(self.daemon, "access_token", return_value="t"):
             answer = self.ask("sub/a.jpg")
         self.assertEqual(answer["image"], "SlBFRw==")
-        self.assertEqual(thumb.call_args[0][1:], ("d-personal", "LinuxClientTest/sub/a.jpg"))
+        self.assertEqual(thumb.call_args[0][1:], ("d-personal", "sub/a.jpg"))  # whole drive
         self.assertEqual(len(self.daemon.previews.made), 1)
 
     def test_offline_gives_a_placeholder_without_asking_onedrive(self):

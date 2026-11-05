@@ -53,7 +53,7 @@ class DownloadedListTest(unittest.TestCase):
         try:
             account = home.add_account("personal", "Personal")
             settings = account.settings()
-            meta = account.cache_dir / "vfsMeta" / "onedrive-ondemand" / "LinuxClientTest"
+            meta = account.cache_dir / "vfsMeta" / "onedrive-ondemand"  # the whole drive
             for rel, size, cached in (("a.txt", 10, 10), ("sub/b.jpg", 10, 4), ("empty", 0, 0)):
                 path = meta / rel
                 path.parent.mkdir(parents=True, exist_ok=True)

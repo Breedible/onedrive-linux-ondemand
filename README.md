@@ -59,9 +59,10 @@ previews and the tray. See [docs/DESIGN.md](docs/DESIGN.md) for how it works.
    - Setup asks whether to show picture previews, then starts everything,
      now and at every login.
 
-   **For now each account only shows one folder of its OneDrive,
-   `LinuxClientTest`** (setup offers to create it). Showing the whole drive
-   will be switched on after more testing.
+   Each account shows its **whole OneDrive**. To show only one folder,
+   set `"remote_folder"` (e.g. `"LinuxClientTest"`) in
+   `~/.config/onedrive-ondemand/accounts/<account>/config.json` and run
+   setup again.
 
 3. **Close all Nemo windows once** (or run `nemo -q`) so Nemo loads the
    OneDrive menu.

@@ -452,18 +452,16 @@ def wait_for_mount(mount_path, seconds=60):
 def start_and_check(account):
     """(Re)start one account's services and check that uploads land in the right place."""
     settings = account.settings()
-    folder = settings["remote_folder"]
+    folder = settings["remote_folder"]  # "" = the whole drive
+    where = f"'{folder}'" if folder else "your OneDrive"
     name = config.display_name(settings)
-    if not folder:
-        # CLAUDE.md safety rule 1: never the whole drive during development.
-        sys.exit("Showing the whole drive isn't supported yet. "
-                 f"Set \"remote_folder\" in {account.settings_file}.")
     mount_path = config.mount_path(settings)
 
     systemctl("stop", account.daemon_service)
     systemctl("stop", account.mount_service)
     check_mount_folder(mount_path)
-    folder_item = ensure_folder(fresh_access_token(account), folder)
+    token = fresh_access_token(account)
+    folder_item = ensure_folder(token, folder) if folder else graph.root_item(token)
     mount_path.mkdir(parents=True, exist_ok=True)
 
     print(f"Starting {name}...")
@@ -479,12 +477,12 @@ def start_and_check(account):
               "(read-only) until you're back online.")
         return
 
-    print(f"Checking that files saved in {mount_path} upload into '{folder}'...")
+    print(f"Checking that files saved in {mount_path} upload into {where}...")
     if not check_upload_location(account, mount_path, folder_item["id"]):
         # Safety first: turn the mount off so nothing else goes to the wrong place.
         systemctl("disable", "--now", account.daemon_service)
         systemctl("disable", "--now", account.mount_service)
-        sys.exit(f"\nSTOPPED: a test file saved in {mount_path} did not arrive in '{folder}' "
+        sys.exit(f"\nSTOPPED: a test file saved in {mount_path} did not arrive in {where} "
                  "on OneDrive, so this account's mount has been turned off.\n"
                  f"If '{PROBE_NAME}' is at the top of that OneDrive (onedrive.com), "
                  "you can delete it.")

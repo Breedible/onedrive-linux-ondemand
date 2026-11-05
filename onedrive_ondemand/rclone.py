@@ -50,13 +50,11 @@ def mount_command(account, settings, rclone="rclone"):
 
     Each flag is explained, because they are the heart of how the client behaves.
     """
-    folder = settings["remote_folder"]
-    if not folder:
-        # CLAUDE.md safety rule 1: never the whole drive during development.
-        raise ValueError("remote_folder is empty: showing the whole drive isn't supported yet")
+    folder = settings["remote_folder"]  # "" = the whole drive
     return [
         rclone, "mount",
-        # Our remote plus the folder to show, e.g. "onedrive-ondemand:LinuxClientTest".
+        # Our remote plus the folder to show: "onedrive-ondemand:" for the whole
+        # drive, or e.g. "onedrive-ondemand:LinuxClientTest" for one folder.
         # rclone builds every path (listings *and* uploads) inside this folder.
         # (We first tried rclone's root_folder_id option instead, but on
         # 2026-10-30 uploads ignored it and landed at the top of the drive.

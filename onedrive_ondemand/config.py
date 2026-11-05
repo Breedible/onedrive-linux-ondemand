@@ -62,9 +62,9 @@ DEFAULT_SETTINGS = {
     "name": "Personal",
     # Where OneDrive appears in the file manager.
     "mount_path": "~/OneDrive - Personal",
-    # Which OneDrive folder to show. "" would mean the whole drive, which
-    # setup refuses during development (CLAUDE.md safety rule 1).
-    "remote_folder": "LinuxClientTest",
+    # Which OneDrive folder to show: "" means the whole drive (the normal
+    # choice). A folder name such as "LinuxClientTest" shows only that folder.
+    "remote_folder": "",
     # Free files you haven't opened for this many days (0 = never).
     "evict_after_days": 30,
     # Keep at least this much of the disk free.

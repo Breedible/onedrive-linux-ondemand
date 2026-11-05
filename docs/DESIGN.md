@@ -241,7 +241,7 @@ already started finishes. Pin downloads also wait. Opening files still works.
 |---|---|
 | Account name | `Personal` for a personal account, `Work` otherwise |
 | Mount path | `~/OneDrive - <name>` |
-| OneDrive folder to show | whole drive (`""`), **or `LinuxClientTest` during development** |
+| OneDrive folder to show | whole drive (`""`); one folder can be chosen instead (`LinuxClientTest` was used during development) |
 | Free unused files after | 30 days (0 = never) |
 | Keep at least this much disk free | 10 % |
 | Upload delay after save | 5 s |
@@ -298,7 +298,13 @@ effort", not "guaranteed".
    saves a test file through the mount and checks with Graph that it arrived
    there; if not, setup turns the mount off. (`root_folder_id` was tried
    first and is **not** safe: uploads ignored it. See RESEARCH.md §5.)
-2. The first time we look at the whole drive, the mount uses `--read-only`.
+   **Since 2026-11-05 the default is the whole drive** (`remote_folder`
+   `""`, mount `onedrive-ondemand:`), with full editing, at the
+   maintainer's request. Setup's upload check then checks the top of the
+   drive. A single folder can still be chosen in the account's settings.
+2. ~~The first time we look at the whole drive, the mount uses
+   `--read-only`.~~ Changed 2026-11-05: the maintainer chose to show the
+   whole drive with full editing straight away (see rule 1's note).
 3. The eviction and pin code is tested first against a **fake cache folder**
    on disk (unit tests), before it ever touches a real mount.
 4. We never use `rclone sync`, `bisync`, `delete`, `purge`, or
@@ -376,8 +382,8 @@ would add work without working properly.
    accounts with one folder each, named like Windows (§13); transfer
    progress in the tray (§5); offline fixes (§4); previews from OneDrive's
    servers instead of downloading (§8); a guided `.deb` install and
-   updates from GitHub (§14). Safety rule 1 still applies to every account:
-   each one only shows its `LinuxClientTest` folder.
+   updates from GitHub (§14). Since 2026-11-05 each account shows its whole
+   drive (§9 rule 1).
 
 ## 13. Several accounts (version 0.2)
 
@@ -399,7 +405,7 @@ daemon from the folder a file is in (`config.account_for_path`).
 - **Add** (`add-account`, or Settings → Add an account): browser sign-in,
   Graph `/me/drive` tells personal from business, refuses an account that's
   already added (same drive ID), asks for a name, then does the same checks
-  as setup (folder exists, uploads land in `LinuxClientTest`).
+  as setup (uploads land in the right place).
 - **Sign out** (`remove-account`, or Settings → Sign out): like Windows'
   "Unlink this PC". Refuses (unless you confirm) while changes are waiting
   to upload. Stops and disables the services, then deletes that account's

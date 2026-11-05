@@ -31,13 +31,13 @@ class MountCommandTest(unittest.TestCase):
     def value_of(self, flag):
         return self.cmd[self.cmd.index(flag) + 1]
 
-    def test_mounts_only_the_chosen_folder(self):
-        self.assertEqual(self.cmd[1:3], ["mount", "onedrive-ondemand:LinuxClientTest"])
+    def test_mounts_the_whole_drive_by_default(self):
+        self.assertEqual(self.cmd[1:3], ["mount", "onedrive-ondemand:"])
 
-    def test_whole_drive_is_refused(self):
-        settings = dict(config.DEFAULT_SETTINGS, remote_folder="")
-        with self.assertRaises(ValueError):
-            rclone.mount_command(self.account, settings)
+    def test_mounts_only_the_chosen_folder(self):
+        settings = dict(config.DEFAULT_SETTINGS, remote_folder="LinuxClientTest")
+        cmd = rclone.mount_command(self.account, settings)
+        self.assertEqual(cmd[1:3], ["mount", "onedrive-ondemand:LinuxClientTest"])
 
     def test_uses_our_config(self):
         self.assertEqual(self.value_of("--config"), str(self.account.rclone_conf))
@@ -66,8 +66,13 @@ class MountCommandTest(unittest.TestCase):
 class OfflineMountCommandTest(unittest.TestCase):
     def setUp(self):
         self.account = config.Account("work")
-        settings = dict(config.DEFAULT_SETTINGS, name="Work")
+        settings = dict(config.DEFAULT_SETTINGS, name="Work", remote_folder="LinuxClientTest")
         self.cmd = rclone.offline_mount_command(self.account, settings, "/run/list.txt")
+
+    def test_whole_drive_shows_the_whole_cache(self):
+        settings = dict(config.DEFAULT_SETTINGS, name="Work")
+        cmd = rclone.offline_mount_command(self.account, settings, "/run/list.txt")
+        self.assertEqual(cmd[2], str(self.account.cache_dir / "vfs" / "onedrive-ondemand"))
 
     def test_shows_the_cache_read_only(self):
         expected = self.account.cache_dir / "vfs" / "onedrive-ondemand" / "LinuxClientTest"

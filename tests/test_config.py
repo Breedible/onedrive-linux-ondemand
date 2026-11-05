@@ -29,7 +29,7 @@ class SettingsTest(unittest.TestCase):
         self.path.write_text(json.dumps({"mount_path": "~/Cloud"}))
         settings = config.load_settings(self.path)
         self.assertEqual(settings["mount_path"], "~/Cloud")
-        self.assertEqual(settings["remote_folder"], "LinuxClientTest")
+        self.assertEqual(settings["remote_folder"], "")  # the whole drive
 
     def test_mount_path_expands_home(self):
         self.assertEqual(config.mount_path({"mount_path": "~/OneDrive - Personal"}),

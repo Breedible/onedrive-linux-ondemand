@@ -49,8 +49,8 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
   Tested in a container (Ubuntu 24.04, rclone 1.60, Cinnamon's thumbnail
   library, Xvfb for the tray). **Not yet tested on the maintainer's PC with
   real OneDrive:** all of 0.2, plus a reboot and OneDrive Business.
-- Each account only shows `LinuxClientTest`; showing the whole drive is the
-  next step after the maintainer's own testing (safety rule 1).
+- **Whole drive shown since 2026-11-05**, with full editing (the maintainer's
+  choice, instead of read-only first). `remote_folder` `""` is the default.
 - Live tests go in `LinuxClientTest/_dev-tests/`. Other folders in there are the
   maintainer's own test files: only ever read them, never change them.
 - Milestones run in order a → f. After each one: explain in plain language
@@ -70,10 +70,12 @@ built on `rclone mount --vfs-cache-mode full`. Read these first:
 - Ask before anything outward-facing (pushing, publishing releases).
 
 ## Safety rules (non-negotiable)
-1. During development, rclone may only see the `LinuxClientTest` folder:
-   mount it by path (`onedrive-ondemand:LinuxClientTest`). **Don't use
-   `root_folder_id` for this: uploads ignore it** (RESEARCH.md §5). Never
-   point it at the whole drive except with `--read-only`.
+1. The mount shows the whole drive (`onedrive-ondemand:`) since
+   2026-11-05, at the maintainer's request. To show one folder, mount it by
+   path (`onedrive-ondemand:<folder>`). **Don't use `root_folder_id`:
+   uploads ignore it** (RESEARCH.md §5). Your own live tests still go only
+   in `LinuxClientTest/_dev-tests/`; never create, change or delete
+   anything else in the maintainer's OneDrive.
 2. Never run `rclone sync`, `bisync`, `delete`, `purge`, `cleanup`, or use
    `--onedrive-hard-delete`.
 3. Test cache, eviction and pin logic against a fake cache folder in unit
