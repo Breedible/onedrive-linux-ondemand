@@ -39,6 +39,8 @@ ONLINE_CHECK_SECONDS = 15
 # Folder emblems (DESIGN.md §3): a folder's state is worked out in the
 # background from what's inside it, and re-checked when it's this old.
 FOLDER_STATE_SECONDS = 20
+# A folder's total size (asked from OneDrive) is remembered this long.
+FOLDER_SIZE_SECONDS = 5 * 60
 FOLDER_LOOP_SECONDS = 1
 MAX_FOLDER_STATES = 5000
 UPKEEP_SECONDS = 5 * 60
@@ -116,9 +118,11 @@ def file_state(rel, is_dir, rule, sidecar, queue_item, pin_pending, pin_error):
 def folder_contents_state(total, downloaded, uploading, failing):
     """The state of a folder that isn't pinned, from the files inside it (DESIGN.md §3).
 
-    total:      how many files are in it (all subfolders included)
-    downloaded: how many of those are fully on this device
-    uploading:  how many are waiting to upload; failing: how many keep failing
+    total:      the size of everything in it, subfolders included (bytes,
+                or a number of files: anything works as long as `downloaded`
+                uses the same unit)
+    downloaded: how much of that is fully on this device
+    uploading:  how many files are waiting to upload; failing: how many keep failing
     """
     if failing:
         return "error"
@@ -187,6 +191,7 @@ class Daemon:
         self.cache_bytes = 0
         self.folder_states = {}        # folder -> (state, time.monotonic() worked out)
         self.folders_to_check = []     # folders waiting for folder_loop
+        self.folder_sizes = {}         # folder -> (total size on OneDrive, time.monotonic())
         self.transfers = []            # files downloading/uploading right now
         self.offline_told = set()      # files we already said can't download offline
         self.last_online_check = 0.0   # time.monotonic() of the last full check
@@ -318,13 +323,13 @@ class Daemon:
                 rel = self.folders_to_check[0]
             try:
                 state = self.work_out_folder_state(rel)
-            except (OSError, cachemod.CacheError):
-                state = None  # e.g. the folder was just deleted
+            except (OSError, cachemod.CacheError, graph.GraphError, UserError) as error:
+                print(f"Couldn't work out the state of {rel}: {error}", flush=True)
+                state = None
             with self.lock:
                 self.folders_to_check.remove(rel)
                 if state is None:
-                    self.folder_states.pop(rel, None)
-                    continue
+                    continue  # keep showing the last answer, if there was one
                 if len(self.folder_states) >= MAX_FOLDER_STATES:
                     self.folder_states.clear()
                 self.folder_states[rel] = (state, time.monotonic())
@@ -334,17 +339,44 @@ class Daemon:
         with self.lock:
             queued = [item for path, item in self.queue.items() if path.startswith(prefix)]
         failing = sum(1 for item in queued if item.get("tries", 0) >= ERROR_TRIES)
-        downloaded = set()
+        downloaded = {}  # path -> size, of the files fully on this device
         for path in self.cache.cached_files(rel):  # quick: only looks on this disk
             sidecar = self.cache.sidecar(path)
             if sidecar is not None and cachemod.is_fully_cached(sidecar):
-                downloaded.add(path)
-        if not downloaded:
-            # Nothing here: only need to know if the folder has any file at all.
-            total = 1 if next(self.walk_files(rel), None) is not None else 0
-            return folder_contents_state(total, 0, len(queued), failing)
-        listed = set(self.walk_files(rel))  # reads the folder listings
-        return folder_contents_state(len(listed), len(listed & downloaded), len(queued), failing)
+                downloaded[path] = sidecar.get("Size", 0)
+        if not downloaded and not queued:
+            return "online"  # nothing of it here: no need to ask OneDrive anything
+        if self.offline_mode():
+            # The offline mount shows only downloaded files, straight from the
+            # disk, so reading its listings is quick.
+            listed = set(self.walk_files(rel))
+            return folder_contents_state(len(listed), len(listed & set(downloaded)),
+                                         len(queued), failing)
+        if self.online is False:
+            return None  # can't ask OneDrive now: keep the last answer
+        # Compare the folder's total size (OneDrive works it out, subfolders
+        # included) with what's downloaded. Much quicker than reading every
+        # folder listing in it, which can take minutes for a big folder.
+        total = self.folder_size(rel)
+        if total is None:
+            return None  # the folder is gone (deleted or moved)
+        return folder_contents_state(total, sum(downloaded.values()), len(queued), failing)
+
+    def folder_size(self, rel):
+        """The total size of a folder on OneDrive (remembered for a few minutes)."""
+        with self.lock:
+            entry = self.folder_sizes.get(rel)
+        if entry and time.monotonic() - entry[1] < FOLDER_SIZE_SECONDS:
+            return entry[0]
+        drive_id = (rclone.read_rclone_conf(self.account.rclone_conf) or {}).get("drive_id")
+        remote_path = f"{self.settings['remote_folder']}/{rel}".strip("/")
+        item = graph.item_by_path(self.access_token(), drive_id, remote_path)
+        size = None if item is None else item.get("size", 0)
+        with self.lock:
+            if len(self.folder_sizes) >= MAX_FOLDER_STATES:
+                self.folder_sizes.clear()
+            self.folder_sizes[rel] = (size, time.monotonic())
+        return size
 
     def forget_folder_states(self):
         """Pinning or freeing changes folders: work them out again when next asked."""

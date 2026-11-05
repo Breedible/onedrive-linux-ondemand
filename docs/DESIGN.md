@@ -84,16 +84,24 @@ inside it, counting every file in its subfolders too:
 | Inside the folder | Emblem |
 |---|---|
 | A file waiting to upload (or failing) | ↻ arrows (✖ red) |
-| Nothing fully downloaded | ☁ cloud |
-| Everything downloaded (or the folder is empty) | ✓ outline tick |
+| Nothing fully downloaded (an empty folder too) | ☁ cloud |
+| Everything downloaded | ✓ outline tick |
 | Some files downloaded, not all | ☁ cloud with a small green tick (`emblem-onedrive-partial`) |
 
-Working this out means reading the folder's listings, which can take
-seconds the first time rclone reads a folder. So the daemon does it in a
-background thread (`folder_loop`) and remembers the answer for 20 s. Nemo
-shows no emblem at first and picks up the answer on its next 3-second
-refresh. If nothing in the folder is in the cache, only one file needs to be
-found to know it's online-only. Pin, unpin and free make every folder be
+How it's worked out, quickest first:
+- Nothing of the folder in the cache: cloud, without asking OneDrive anything.
+- Otherwise the daemon compares the folder's **total size on OneDrive**
+  (Graph gives a folder's size with all its subfolders included, in one
+  request) with the size of its fully downloaded files in the cache. The
+  size is remembered for 5 minutes. Reading every folder listing instead
+  was tried first (2026-11-05) and took many seconds for big folders,
+  because rclone fetches each listing from OneDrive the first time.
+- In the offline mount, the listings come straight from the disk, so the
+  files are counted instead. While offline otherwise, the last answer stays.
+
+This runs in a background thread (`folder_loop`) and each answer is
+remembered for 20 s. Nemo shows no emblem at first and picks up the answer
+on its next 3-second refresh. Pin, unpin and free make every folder be
 worked out again. The top OneDrive folder itself gets no emblem.
 
 ### How pins are stored

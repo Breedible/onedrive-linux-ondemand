@@ -145,6 +145,22 @@ def reachable(timeout=5):
     return False
 
 
+def item_by_path(access_token, drive_id, path):
+    """The item at `path` in the drive (e.g. "Pictures/2024"), or None if there's none.
+
+    For a folder, its "size" is the total size of everything inside it,
+    subfolders included: OneDrive works that out on its servers.
+    """
+    quoted = urllib.parse.quote(path.strip("/"))
+    try:
+        return _request(access_token, "GET",
+                        f"/drives/{urllib.parse.quote(drive_id)}/root:/{quoted}?$select=id,size,folder")
+    except GraphError as error:
+        if error.status == 404:
+            return None
+        raise
+
+
 def thumbnail(access_token, drive_id, path, size="medium"):
     """OneDrive's own small preview picture of a file, as JPEG bytes, or None.
 
