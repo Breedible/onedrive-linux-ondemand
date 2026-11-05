@@ -10,6 +10,7 @@ from onedrive_ondemand import __version__
 STATE_NAMES = {
     "online": "online-only (not on this device)",
     "local": "locally available",
+    "partial": "partly on this device (some files downloaded)",
     "pinned": "always kept on this device",
     "syncing": "syncing",
     "error": "error",

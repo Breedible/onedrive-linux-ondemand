@@ -9,8 +9,9 @@ It also tells the daemons which OneDrive folders Nemo windows are showing,
 so picture previews can be deleted once you've left a folder (DESIGN.md §8).
 
 Emblems (icons in data/icons/.../emblems):
-    onedrive-online   cloud           online-only
-    onedrive-local    outline tick    locally available
+    onedrive-online   cloud           online-only (a folder: nothing in it downloaded)
+    onedrive-partial  cloud + tick    a folder with some files downloaded, not all
+    onedrive-local    outline tick    locally available (a folder: everything in it)
     onedrive-pinned   solid tick      always keep on this device
     onedrive-syncing  arrows          uploading, or pin still downloading
     onedrive-error    red cross       upload keeps failing / pin download failed
@@ -37,6 +38,7 @@ from onedrive_ondemand import config, ipc  # noqa: E402
 EMBLEMS = {
     "online": "onedrive-online",
     "local": "onedrive-local",
+    "partial": "onedrive-partial",
     "pinned": "onedrive-pinned",
     "syncing": "onedrive-syncing",
     "error": "onedrive-error",

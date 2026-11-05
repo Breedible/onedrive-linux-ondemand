@@ -77,6 +77,25 @@ files in your editor must keep working. rclone is mature, and our code is new.
 | *Syncing* | Upload pending, or pinned but still downloading. | `Dirty: true`, or in rclone's upload queue, or pin download in progress. | ↻ arrows |
 | *Error* | Upload keeps failing, or pin download failed. | Upload queue `tries` above a limit, or a recorded download error. | ✖ red |
 
+**Folders** (added 2026-11-05, at the maintainer's request). A pinned folder
+shows the pinned or syncing emblem as above. Any other folder shows what's
+inside it, counting every file in its subfolders too:
+
+| Inside the folder | Emblem |
+|---|---|
+| A file waiting to upload (or failing) | ↻ arrows (✖ red) |
+| Nothing fully downloaded | ☁ cloud |
+| Everything downloaded (or the folder is empty) | ✓ outline tick |
+| Some files downloaded, not all | ☁ cloud with a small green tick (`emblem-onedrive-partial`) |
+
+Working this out means reading the folder's listings, which can take
+seconds the first time rclone reads a folder. So the daemon does it in a
+background thread (`folder_loop`) and remembers the answer for 20 s. Nemo
+shows no emblem at first and picks up the answer on its next 3-second
+refresh. If nothing in the folder is in the cache, only one file needs to be
+found to know it's online-only. Pin, unpin and free make every folder be
+worked out again. The top OneDrive folder itself gets no emblem.
+
 ### How pins are stored
 
 A SQLite file holds **rules**, not per-file flags:

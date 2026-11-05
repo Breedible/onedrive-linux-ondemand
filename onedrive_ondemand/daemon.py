@@ -36,6 +36,11 @@ from onedrive_ondemand.conflicts import ConflictGuard
 
 QUEUE_POLL_SECONDS = 2
 ONLINE_CHECK_SECONDS = 15
+# Folder emblems (DESIGN.md §3): a folder's state is worked out in the
+# background from what's inside it, and re-checked when it's this old.
+FOLDER_STATE_SECONDS = 20
+FOLDER_LOOP_SECONDS = 1
+MAX_FOLDER_STATES = 5000
 UPKEEP_SECONDS = 5 * 60
 PREVIEW_CLEANUP_SECONDS = 30
 # Re-read every folder listing this often, so folders you haven't opened
@@ -89,6 +94,7 @@ def file_state(rel, is_dir, rule, sidecar, queue_item, pin_pending, pin_error):
 
     Files:   "online", "local", "pinned", "syncing" or "error".
     Folders: "pinned", "syncing" (pinned, still downloading) or "none".
+    "none" means "look at what's inside" (folder_contents_state).
     """
     pinned = rule is not None and rule["state"] == pins.PINNED
     if is_dir:
@@ -105,6 +111,24 @@ def file_state(rel, is_dir, rule, sidecar, queue_item, pin_pending, pin_error):
             return "error"
         return "pinned" if full and not pin_pending else "syncing"
     return "local" if full else "online"
+
+
+def folder_contents_state(total, downloaded, uploading, failing):
+    """The state of a folder that isn't pinned, from the files inside it (DESIGN.md §3).
+
+    total:      how many files are in it (all subfolders included)
+    downloaded: how many of those are fully on this device
+    uploading:  how many are waiting to upload; failing: how many keep failing
+    """
+    if failing:
+        return "error"
+    if uploading:
+        return "syncing"
+    if total and not downloaded:
+        return "online"
+    if downloaded >= total:
+        return "local"  # everything here (an empty folder counts too)
+    return "partial"
 
 
 def transfers_from_stats(stats, queue):
@@ -161,6 +185,8 @@ class Daemon:
         self.pin_errors = {}           # path -> error message
         self.last_upkeep = None
         self.cache_bytes = 0
+        self.folder_states = {}        # folder -> (state, time.monotonic() worked out)
+        self.folders_to_check = []     # folders waiting for folder_loop
         self.transfers = []            # files downloading/uploading right now
         self.offline_told = set()      # files we already said can't download offline
         self.last_online_check = 0.0   # time.monotonic() of the last full check
@@ -264,7 +290,66 @@ class Daemon:
                 pending = rel in self.pin_pending
             error = self.pin_errors.get(rel)
         sidecar = None if is_dir else self.cache.sidecar(rel)
-        return file_state(rel, is_dir, rule, sidecar, queue_item, pending, error)
+        state = file_state(rel, is_dir, rule, sidecar, queue_item, pending, error)
+        if state == "none" and rel:  # the top folder itself would mean walking everything
+            state = self.folder_state(rel)
+        return state
+
+    def folder_state(self, rel):
+        """A folder's last worked-out state ("none" the first time).
+
+        Working it out can mean reading many folder listings, which is too
+        slow to make Nemo wait for. So folder_loop does it in the background,
+        and Nemo picks up the answer when it asks again (every few seconds).
+        """
+        with self.lock:
+            entry = self.folder_states.get(rel)
+            stale = entry is None or time.monotonic() - entry[1] > FOLDER_STATE_SECONDS
+            if stale and rel not in self.folders_to_check:
+                self.folders_to_check.append(rel)
+        return entry[0] if entry else "none"
+
+    def folder_loop(self):
+        """Work out the state of every folder waiting in folders_to_check."""
+        while not self.stopping.is_set():
+            with self.lock:
+                if not self.folders_to_check:
+                    return
+                rel = self.folders_to_check[0]
+            try:
+                state = self.work_out_folder_state(rel)
+            except (OSError, cachemod.CacheError):
+                state = None  # e.g. the folder was just deleted
+            with self.lock:
+                self.folders_to_check.remove(rel)
+                if state is None:
+                    self.folder_states.pop(rel, None)
+                    continue
+                if len(self.folder_states) >= MAX_FOLDER_STATES:
+                    self.folder_states.clear()
+                self.folder_states[rel] = (state, time.monotonic())
+
+    def work_out_folder_state(self, rel):
+        prefix = rel + "/"
+        with self.lock:
+            queued = [item for path, item in self.queue.items() if path.startswith(prefix)]
+        failing = sum(1 for item in queued if item.get("tries", 0) >= ERROR_TRIES)
+        downloaded = set()
+        for path in self.cache.cached_files(rel):  # quick: only looks on this disk
+            sidecar = self.cache.sidecar(path)
+            if sidecar is not None and cachemod.is_fully_cached(sidecar):
+                downloaded.add(path)
+        if not downloaded:
+            # Nothing here: only need to know if the folder has any file at all.
+            total = 1 if next(self.walk_files(rel), None) is not None else 0
+            return folder_contents_state(total, 0, len(queued), failing)
+        listed = set(self.walk_files(rel))  # reads the folder listings
+        return folder_contents_state(len(listed), len(listed & downloaded), len(queued), failing)
+
+    def forget_folder_states(self):
+        """Pinning or freeing changes folders: work them out again when next asked."""
+        with self.lock:
+            self.folder_states = {rel: (state, 0.0) for rel, (state, _t) in self.folder_states.items()}
 
     # --- requests from the CLI, Nemo and tray -------------------------------
 
@@ -282,6 +367,8 @@ class Daemon:
             return {"ok": False, "error": f"unknown command {cmd!r}"}
         try:
             answer = handlers[cmd](message)
+            if cmd in ("pin", "unpin", "free"):
+                self.forget_folder_states()
         except UserError as error:
             return {"ok": False, "error": str(error)}
         except (rclone.RcError, graph.GraphError, cachemod.CacheError, OSError) as error:
@@ -841,7 +928,9 @@ class Daemon:
                                     name="online", daemon=True),
                    threading.Thread(target=self.loop,
                                     args=(self.preview_cleanup, PREVIEW_CLEANUP_SECONDS),
-                                    name="previews", daemon=True)]
+                                    name="previews", daemon=True),
+                   threading.Thread(target=self.loop, args=(self.folder_loop, FOLDER_LOOP_SECONDS),
+                                    name="folders", daemon=True)]
         threads += [threading.Thread(target=self.pin_worker, name=f"pins-{n}", daemon=True)
                     for n in range(PIN_WORKERS)]
         for thread in threads:
